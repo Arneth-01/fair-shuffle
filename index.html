@@ -55,6 +55,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
+<p style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 7</p>
 
 <script>
 "use strict";
@@ -358,6 +359,13 @@ async function viewPlaylists(){
   };
 }
 
+function topArtists(list){
+  const c = new Map();
+  list.forEach(t => { const a = artistOf(t) || "?"; c.set(a, (c.get(a) || 0) + 1); });
+  const top = [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  return "Meiste Songs: " + top.map(([a, n]) => `${esc(a)} ${n}× (${Math.round(n / list.length * 100)} %)`).join(", ");
+}
+
 function viewShuffle(id, name){
   app.innerHTML = `
     <button class="sec" id="back">← Zurück</button>
@@ -383,7 +391,7 @@ function viewShuffle(id, name){
       out.innerHTML = msg(`<span class="spin"></span>Speichere ${shuffled.length} Songs in Spotify …`);
       const targetId = await saveShuffled(id, name, shuffled);
       out.innerHTML = `
-        ${msg(`✅ ${shuffled.length} Songs fair gemischt und gespeichert.<br>Wichtig: In Spotify <b>Shuffle AUS</b> und <b>Wiederholen AUS</b> lassen.`, "ok")}
+        ${msg(`✅ ${shuffled.length} Songs fair gemischt und gespeichert.<br>${topArtists(shuffled)}<br>Wichtig: In Spotify <b>Shuffle AUS</b> und <b>Wiederholen AUS</b> lassen.`, "ok")}
         <button id="play">▶︎ Jetzt abspielen</button>
         <a class="btn sec" href="https://open.spotify.com/playlist/${esc(targetId)}" target="_blank" rel="noopener">In Spotify öffnen</a>
         <div class="card"><b>Die ersten Songs:</b>
