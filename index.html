@@ -8,6 +8,9 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Fair Shuffle">
 <title>Fair Shuffle</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
   :root{--bg:#0e0e10;--card:#1a1a1f;--card2:#24242b;--text:#f2f2f2;--muted:#9a9aa5;--accent:#1ed760;--err:#ff5a5a}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -399,6 +402,7 @@ function render(){
 }
 
 document.getElementById("btnSettings").onclick = viewSettings;
+if ("serviceWorker" in navigator) { navigator.serviceWorker.register("sw.js").catch(() => {}); }
 
 (async () => {
   try { await handleRedirect(); }
