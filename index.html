@@ -225,6 +225,14 @@ async function saveShuffled(sourceId, sourceName, tracks){
   const uris = tracks.map(t => t.uri);
   const name = "🔀 " + sourceName + " (Fair Shuffle)";
 
+  // Auf einem anderen Gerät angelegte Shuffle-Playlist am Namen wiederfinden
+  if (!targetId) {
+    try {
+      const lists = await getAll("/me/playlists?limit=50");
+      const found = lists.find(p => p && p.name === name && p.owner && me && p.owner.id === me.id);
+      if (found) { targetId = found.id; map[sourceId] = targetId; store.set("targets", map); }
+    } catch(e) {}
+  }
   // Vorhandene Shuffle-Playlist wiederverwenden, sonst neu anlegen
   if (targetId) {
     try { await api("/playlists/" + targetId + "/items", { method: "PUT", body: JSON.stringify({ uris: uris.slice(0, 100) }) }); }
@@ -289,7 +297,8 @@ async function viewPlaylists(){
   if (!me) me = await api("/me");
   const all = await getAll("/me/playlists?limit=50");
   const targets = new Set(Object.values(store.get("targets", {})));
-  const mine = all.filter(p => p && (p.owner && p.owner.id === me.id || p.collaborative) && !targets.has(p.id));
+  const isShuffleList = p => targets.has(p.id) || /\(Fair Shuffle\)\s*$/i.test(p.name || "");
+  const mine = all.filter(p => p && (p.owner && p.owner.id === me.id || p.collaborative) && !isShuffleList(p));
   const others = all.filter(p => p && !(p.owner && p.owner.id === me.id || p.collaborative));
   const count = p => ((p.items || p.tracks || {}).total ?? "?");
 
