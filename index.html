@@ -16,35 +16,46 @@
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
        padding:env(safe-area-inset-top) 16px calc(env(safe-area-inset-bottom) + 24px)}
-  header,#app{max-width:560px;margin-left:auto;margin-right:auto}
-  .card.pl:hover{background:var(--card2)}
+  header,#app,#ver{max-width:560px;margin-left:auto;margin-right:auto}
   header{display:flex;align-items:center;justify-content:space-between;padding:18px 0 10px}
   h1{font-size:22px;margin:0}
   h2{font-size:18px;margin:18px 0 8px}
+  h3{font-size:16px;margin:0 0 6px}
   p{color:var(--muted);line-height:1.45;margin:6px 0}
   .card{background:var(--card);border-radius:14px;padding:14px;margin:10px 0}
-  .pl{display:flex;align-items:center;gap:12px;cursor:pointer}
+  .pl{display:flex;align-items:center;gap:12px;cursor:pointer;border:2px solid transparent}
+  .pl:hover{background:var(--card2)}
+  .pl.sel{border-color:var(--accent);background:#14251b}
   .pl img,.pl .ph{width:52px;height:52px;border-radius:8px;object-fit:cover;background:var(--card2);flex:none;display:flex;align-items:center;justify-content:center;font-size:22px}
   .pl .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pl .s{color:var(--muted);font-size:13px}
+  .pl .chk{width:24px;height:24px;border-radius:6px;border:2px solid var(--muted);flex:none;display:flex;align-items:center;justify-content:center;font-weight:900;color:#000}
+  .pl.sel .chk{background:var(--accent);border-color:var(--accent)}
   .grow{flex:1;min-width:0}
   button,.btn{display:block;width:100%;border:0;border-radius:999px;padding:14px 18px;font-size:16px;font-weight:700;
          background:var(--accent);color:#000;margin:10px 0;text-align:center;text-decoration:none;cursor:pointer}
   button.sec,.btn.sec{background:var(--card2);color:var(--text)}
   button.small{display:inline-block;width:auto;padding:8px 14px;font-size:14px;margin:0}
   button:disabled{opacity:.5}
+  .row{display:flex;gap:10px}
+  .row > *{flex:1}
   input[type=text],input[type=search]{width:100%;padding:12px;border-radius:10px;border:1px solid #333;background:var(--card2);color:var(--text);font-size:15px}
-  label.opt{display:flex;gap:10px;align-items:flex-start;padding:10px 0;color:var(--text)}
+  label.opt{display:flex;gap:10px;align-items:flex-start;padding:10px 0;color:var(--text);cursor:pointer}
   label.opt input{width:20px;height:20px;margin-top:2px;accent-color:var(--accent);flex:none}
   label.opt small{display:block;color:var(--muted)}
+  .alist{max-height:360px;overflow:auto;margin-top:8px}
+  .alist label.opt{padding:6px 0}
   code{background:var(--card2);padding:2px 6px;border-radius:6px;word-break:break-all;font-size:13px}
   .msg{padding:12px;border-radius:10px;margin:10px 0;background:var(--card2)}
   .msg.err{background:#3a1717;color:#ffd0d0}
   .msg.ok{background:#123a20;color:#c9ffd9}
+  .bar{height:8px;border-radius:99px;background:var(--card2);overflow:hidden;margin:8px 0}
+  .bar > div{height:100%;background:var(--accent)}
   ol.prev{padding-left:22px;margin:6px 0;color:var(--text)}
   ol.prev li{padding:3px 0}
   ol.prev li span{color:var(--muted)}
-  .hidden{display:none}
+  .sticky{position:sticky;bottom:calc(env(safe-area-inset-bottom) + 10px);z-index:5;box-shadow:0 6px 24px #000a}
+  .hidden{display:none !important}
   .spin{display:inline-block;width:16px;height:16px;border:2px solid var(--muted);border-top-color:var(--accent);border-radius:50%;animation:r 0.8s linear infinite;vertical-align:middle;margin-right:8px}
   @keyframes r{to{transform:rotate(360deg)}}
 </style>
@@ -55,7 +66,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 7</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 8</p>
 
 <script>
 "use strict";
@@ -63,8 +74,10 @@
 const SCOPES = [
   "playlist-read-private","playlist-read-collaborative",
   "playlist-modify-private","playlist-modify-public",
-  "user-library-read","user-read-playback-state","user-modify-playback-state"
+  "user-library-read","user-read-playback-state","user-modify-playback-state",
+  "user-read-recently-played"
 ].join(" ");
+const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
 
@@ -77,6 +90,12 @@ const store = {
 const app = document.getElementById("app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let me = null;
+let playlistCache = null;           // Liste der eigenen Playlists (für diese Sitzung)
+const trackCache = new Map();       // geladene Songs pro Quelle (für diese Sitzung)
+
+const defaultOpts = () => ({ spread: false, dedupe: true, excl: [] });
+const getOpts = id => Object.assign(defaultOpts(), store.get("opts_" + id, {}));
+const setOpts = (id, o) => store.set("opts_" + id, o);
 
 /* ================== Zufall (kryptografisch, ohne Verzerrung) ================== */
 function randInt(n){ // 0 .. n-1
@@ -85,6 +104,7 @@ function randInt(n){ // 0 .. n-1
   do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
   return buf[0] % n;
 }
+function rand01(){ const b = new Uint32Array(1); crypto.getRandomValues(b); return b[0] / 0x100000000; }
 function fisherYates(arr){
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -95,36 +115,11 @@ function fisherYates(arr){
 }
 const artistOf = t => (t.artists && t.artists[0] && t.artists[0].name) || (t.show && t.show.name) || "";
 
-// Optional: zwei Songs vom selben Künstler nicht direkt hintereinander (wo möglich)
-function spreadArtists(a){
-  const same = (x, y) => x && y && artistOf(x) && artistOf(x) === artistOf(y);
-  const okAt = (pos, t, skip) => // passt Song t an Position pos (Nachbarn prüfen, skip = Tauschpartner ignorieren)
-    !(pos > 0 && pos - 1 !== skip && same(a[pos - 1], t)) && !(pos < a.length - 1 && pos + 1 !== skip && same(a[pos + 1], t));
-  for (let pass = 0; pass < 3; pass++) {
-    let fixed = true;
-    for (let i = 1; i < a.length; i++) {
-      if (!same(a[i], a[i - 1])) continue;
-      fixed = false;
-      // zuerst weiter hinten suchen, dann weiter vorne
-      const order = [];
-      for (let j = i + 1; j < a.length; j++) order.push(j);
-      for (let j = 0; j < i - 1; j++) order.push(j);
-      for (const j of order) {
-        if (okAt(i, a[j], j) && okAt(j, a[i], i)) { [a[i], a[j]] = [a[j], a[i]]; break; }
-      }
-    }
-    if (fixed) break;
-  }
-  return a;
-}
-// Zufallszahl 0 .. <1 (kryptografisch)
-function rand01(){ const b = new Uint32Array(1); crypto.getRandomValues(b); return b[0] / 0x100000000; }
-
 /* Ausgewogener Shuffle:
    Die Songs jedes Künstlers werden gleichmäßig über die ganze Playlist verteilt
    (zufälliger Startpunkt + gleicher Abstand + etwas Zufallsschwankung).
-   Jeder Song kommt genau einmal, und jeder Song hat weiterhin auf jeder Position
-   dieselbe Chance – aber Häufchen vom selben Künstler werden vermieden. */
+   Jeder Song kommt genau einmal und hat auf jeder Position dieselbe Chance –
+   aber Häufchen vom selben Künstler werden vermieden. */
 function balancedShuffle(tracks){
   const groups = new Map();
   for (const t of tracks) {
@@ -146,7 +141,50 @@ function balancedShuffle(tracks){
   return placed.map(p => p.t);
 }
 
+// Optional: zwei Songs vom selben Künstler nie direkt hintereinander (soweit möglich)
+function spreadArtists(a){
+  const same = (x, y) => x && y && artistOf(x) && artistOf(x) === artistOf(y);
+  const okAt = (pos, t, skip) =>
+    !(pos > 0 && pos - 1 !== skip && same(a[pos - 1], t)) && !(pos < a.length - 1 && pos + 1 !== skip && same(a[pos + 1], t));
+  for (let pass = 0; pass < 3; pass++) {
+    let fixed = true;
+    for (let i = 1; i < a.length; i++) {
+      if (!same(a[i], a[i - 1])) continue;
+      fixed = false;
+      const order = [];
+      for (let j = i + 1; j < a.length; j++) order.push(j);
+      for (let j = 0; j < i - 1; j++) order.push(j);
+      for (const j of order) {
+        if (okAt(i, a[j], j) && okAt(j, a[i], i)) { [a[i], a[j]] = [a[j], a[i]]; break; }
+      }
+    }
+    if (fixed) break;
+  }
+  return a;
+}
 const fairShuffle = (tracks, spread) => spread ? spreadArtists(balancedShuffle(tracks)) : balancedShuffle(tracks);
+
+/* ================== Doppelte Songs ================== */
+// Gleicher Song = gleicher Künstler + gleicher Titel, wobei Remaster-/Versions-Zusätze ignoriert werden.
+// "Live", "Acoustic" usw. bleiben eigene Songs.
+function songKey(t){
+  let n = (t.name || "").toLowerCase();
+  const extra = "(\\d{4}\\s*)?(digital(ly)?\\s*)?(remaster(ed)?|single version|album version|radio edit|mono|stereo)(\\s*\\d{4})?(\\s*version)?(\\s*mix)?";
+  n = n.replace(new RegExp("\\s*[\\(\\[]\\s*" + extra + "\\s*[\\)\\]]", "g"), "");
+  n = n.replace(new RegExp("\\s+-\\s+" + extra + "\\s*$"), "");
+  n = n.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  return artistOf(t).toLowerCase() + "|" + n;
+}
+function removeDuplicates(list, fuzzy){
+  const seen = new Set(), out = [];
+  for (const t of list) {
+    const k = fuzzy ? songKey(t) : t.id;
+    if (seen.has(k)) continue;
+    seen.add(k); if (fuzzy) seen.add(t.id);
+    out.push(t);
+  }
+  return out;
+}
 
 /* ================== Login (PKCE, kein Server nötig) ================== */
 function randomString(len){
@@ -192,6 +230,7 @@ async function handleRedirect(){
     grant_type: "authorization_code", code: q.get("code"), redirect_uri: REDIRECT_URI,
     client_id: store.get("clientId"), code_verifier: store.get("verifier")
   });
+  store.set("scopeVer", SCOPE_VER);
   store.del("verifier"); store.del("state");
 }
 async function accessToken(){
@@ -201,7 +240,7 @@ async function accessToken(){
   await tokenRequest({ grant_type: "refresh_token", refresh_token: t.refresh, client_id: store.get("clientId") });
   return store.get("token").access;
 }
-function logout(){ store.del("token"); me = null; render(); }
+function logout(){ store.del("token"); me = null; playlistCache = null; trackCache.clear(); render(); }
 
 /* ================== Spotify-API ================== */
 async function api(path, opts = {}, retry = true){
@@ -239,29 +278,47 @@ async function getAll(path, onProgress){
   }
   return out;
 }
-async function loadTracks(sourceId, onProgress){
-  const raw = sourceId === "liked"
+async function ensureMe(){ if (!me) me = await api("/me"); return me; }
+async function getPlaylists(force){
+  if (!playlistCache || force) playlistCache = await getAll("/me/playlists?limit=50");
+  return playlistCache;
+}
+async function loadOne(id, onProgress){
+  const raw = id === "liked"
     ? await getAll("/me/tracks?limit=50", onProgress)
-    : await getAll("/playlists/" + sourceId + "/items?limit=50", onProgress);
+    : await getAll("/playlists/" + id + "/items?limit=50", onProgress);
   return raw
     .map(it => it.item || it.track)
     .filter(t => t && t.uri && t.id && !t.uri.startsWith("spotify:local") && t.is_local !== true);
 }
+// Quelle = "liked", eine Playlist-ID oder "multi:ID1,ID2,..."
+async function getTracks(sourceId, onProgress){
+  if (trackCache.has(sourceId)) return trackCache.get(sourceId);
+  const ids = sourceId.startsWith("multi:") ? sourceId.slice(6).split(",") : [sourceId];
+  let all = [], done = 0;
+  for (const id of ids) {
+    const part = await loadOne(id, (n, total) => onProgress && onProgress(done + n, null));
+    done += part.length; all = all.concat(part);
+  }
+  all = removeDuplicates(all, false);           // exakt gleiche Songs immer nur einmal
+  trackCache.set(sourceId, all);
+  return all;
+}
+const shuffleName = name => "🔀 " + (name.length > 80 ? name.slice(0, 77) + "…" : name) + " (Fair Shuffle)";
+
 async function saveShuffled(sourceId, sourceName, tracks){
+  await ensureMe();
   const map = store.get("targets", {});
   let targetId = map[sourceId];
   const uris = tracks.map(t => t.uri);
-  const name = "🔀 " + sourceName + " (Fair Shuffle)";
+  const name = shuffleName(sourceName);
 
-  // Auf einem anderen Gerät angelegte Shuffle-Playlist am Namen wiederfinden
-  if (!targetId) {
+  if (!targetId) {   // auf einem anderen Gerät angelegte Shuffle-Playlist am Namen wiederfinden
     try {
-      const lists = await getAll("/me/playlists?limit=50");
-      const found = lists.find(p => p && p.name === name && p.owner && me && p.owner.id === me.id);
-      if (found) { targetId = found.id; map[sourceId] = targetId; store.set("targets", map); }
+      const found = (await getPlaylists(true)).find(p => p && p.name === name && p.owner && p.owner.id === me.id);
+      if (found) targetId = found.id;
     } catch(e) {}
   }
-  // Vorhandene Shuffle-Playlist wiederverwenden, sonst neu anlegen
   if (targetId) {
     try { await api("/playlists/" + targetId + "/items", { method: "PUT", body: JSON.stringify({ uris: uris.slice(0, 100) }) }); }
     catch(e) { targetId = null; }
@@ -271,22 +328,127 @@ async function saveShuffled(sourceId, sourceName, tracks){
       name, public: false, description: "Fair gemischt – in Spotify mit Shuffle AUS abspielen."
     })});
     targetId = pl.id;
-    map[sourceId] = targetId; store.set("targets", map);
     await api("/playlists/" + targetId + "/items", { method: "PUT", body: JSON.stringify({ uris: uris.slice(0, 100) }) });
+    playlistCache = null;
   }
+  map[sourceId] = targetId; store.set("targets", map);
   for (let i = 100; i < uris.length; i += 100) {
     await api("/playlists/" + targetId + "/items", { method: "POST", body: JSON.stringify({ uris: uris.slice(i, i + 100) }) });
   }
   return targetId;
 }
-async function playNow(playlistId){
-  await api("/me/player/play", { method: "PUT", body: JSON.stringify({ context_uri: "spotify:playlist:" + playlistId }) });
+
+/* Mischen + speichern mit den gespeicherten Optionen der Quelle */
+async function runMix(sourceId, sourceName, status){
+  const o = getOpts(sourceId);
+  status("Lade Songs …");
+  let tracks = await getTracks(sourceId, n => status("Lade Songs … " + n));
+  const before = tracks.length;
+  if (o.dedupe) tracks = removeDuplicates(tracks, true);
+  const dupes = before - tracks.length;
+  const excl = new Set(o.excl);
+  const beforeExcl = tracks.length;
+  tracks = tracks.filter(t => !excl.has(artistOf(t)));
+  const excluded = beforeExcl - tracks.length;
+  if (!tracks.length) throw new Error("Keine Songs übrig – sind alle Künstler ausgeschlossen?");
+  const shuffled = fairShuffle(tracks, o.spread);
+  status(`Speichere ${shuffled.length} Songs in Spotify …`);
+  const targetId = await saveShuffled(sourceId, sourceName, shuffled);
+  store.set("order_" + targetId, shuffled.map(t => t.uri));
+  store.del("pos_" + targetId);
+  store.set("last", { id: sourceId, name: sourceName });
+  return { targetId, shuffled, dupes, excluded };
+}
+
+/* ================== Abspielen & Fortschritt ================== */
+async function playerState(){
+  try { return await api("/me/player"); } catch(e) { return null; }
+}
+async function getOrder(targetId){
+  let order = store.get("order_" + targetId);
+  if (!order) {
+    order = (await loadOne(targetId)).map(t => t.uri);
+    store.set("order_" + targetId, order);
+  }
+  return order;
+}
+// Wo steht man in der Runde? -> { index (0-basiert), total, playing }
+async function getProgress(targetId){
+  const order = await getOrder(targetId);
+  const ctx = "spotify:playlist:" + targetId;
+  const st = await playerState();
+  if (st && st.context && st.context.uri === ctx && st.item) {
+    const idx = order.indexOf(st.item.uri);
+    if (idx >= 0) {
+      store.set("pos_" + targetId, { uri: st.item.uri, ms: st.progress_ms || 0 });
+      return { index: idx, total: order.length, playing: !!st.is_playing, state: st };
+    }
+  }
+  try {
+    const rp = await api("/me/player/recently-played?limit=50");
+    const hit = (rp.items || []).find(i => i.context && i.context.uri === ctx && i.track);
+    if (hit) {
+      const idx = order.indexOf(hit.track.uri);
+      if (idx >= 0) {
+        const saved = store.get("pos_" + targetId);
+        const savedIdx = saved ? order.indexOf(saved.uri) : -1;
+        if (savedIdx < idx + 1) {   // zuletzt fertig gehörter Song -> beim nächsten weitermachen
+          const nextUri = order[Math.min(idx + 1, order.length - 1)];
+          store.set("pos_" + targetId, { uri: nextUri, ms: 0, finished: idx + 1 >= order.length });
+        }
+      }
+    }
+  } catch(e) {}
+  const saved = store.get("pos_" + targetId);
+  if (saved) {
+    const idx = order.indexOf(saved.uri);
+    if (idx >= 0) return { index: idx, total: order.length, playing: false, finished: !!saved.finished, state: st };
+  }
+  return { index: -1, total: order.length, playing: false, state: st };
+}
+async function playFrom(targetId, uri, ms){
+  const body = { context_uri: "spotify:playlist:" + targetId };
+  if (uri) body.offset = { uri };
+  if (ms) body.position_ms = ms;
+  await api("/me/player/play", { method: "PUT", body: JSON.stringify(body) });
   try { await api("/me/player/shuffle?state=false", { method: "PUT" }); } catch(e) {}
+  try { await api("/me/player/repeat?state=off", { method: "PUT" }); } catch(e) {}
+}
+async function resume(targetId){
+  const st = await playerState();
+  if (st && st.context && st.context.uri === "spotify:playlist:" + targetId && st.item) {
+    if (!st.is_playing) await api("/me/player/play", { method: "PUT" });
+    try { await api("/me/player/shuffle?state=false", { method: "PUT" }); } catch(e) {}
+    return;
+  }
+  const saved = store.get("pos_" + targetId);
+  await playFrom(targetId, saved && saved.uri, saved && saved.ms);
+}
+function playError(e){
+  return e.status === 404 ? "Kein aktives Gerät gefunden – öffne kurz die Spotify-App, starte irgendeinen Song und versuch es nochmal."
+       : e.status === 403 ? "Spotify erlaubt das direkte Abspielen hier nicht (Premium nötig). Nutze „In Spotify öffnen“."
+       : (e.message || String(e));
 }
 
 /* ================== Oberfläche ================== */
 function msg(text, type = ""){ return `<div class="msg ${type}">${text}</div>`; }
 function loading(text){ app.innerHTML = msg(`<span class="spin"></span>${esc(text)}`); }
+const spinMsg = t => msg(`<span class="spin"></span>${esc(t)}`);
+
+function topArtists(list){
+  const c = new Map();
+  list.forEach(t => { const a = artistOf(t) || "?"; c.set(a, (c.get(a) || 0) + 1); });
+  const top = [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  return "Meiste Songs: " + top.map(([a, n]) => `${esc(a)} ${n}× (${Math.round(n / list.length * 100)} %)`).join(", ");
+}
+function resultHtml(r){
+  const extra = [];
+  if (r.dupes) extra.push(`${r.dupes} doppelte Song(s) entfernt`);
+  if (r.excluded) extra.push(`${r.excluded} Song(s) von ausgeschlossenen Künstlern weggelassen`);
+  return msg(`✅ ${r.shuffled.length} Songs fair gemischt und gespeichert.<br>${topArtists(r.shuffled)}` +
+    (extra.length ? `<br>${extra.join(" · ")}` : "") +
+    `<br>Wichtig: In Spotify <b>Shuffle AUS</b> und <b>Wiederholen AUS</b>.`, "ok");
+}
 
 function viewSetup(error = ""){
   document.getElementById("btnSettings").classList.add("hidden");
@@ -296,7 +458,7 @@ function viewSetup(error = ""){
       <h2 style="margin-top:0">Einrichtung (einmalig)</h2>
       <p>1. Auf <b>developer.spotify.com/dashboard</b> eine App anlegen (Web API anhaken).</p>
       <p>2. Als <b>Redirect URI</b> genau diese Adresse eintragen:</p>
-      <p><code id="ru">${esc(REDIRECT_URI)}</code></p>
+      <p><code>${esc(REDIRECT_URI)}</code></p>
       <button class="sec" id="copyRu">Adresse kopieren</button>
       <p>3. Die <b>Client ID</b> der App hier einfügen:</p>
       <input type="text" id="cid" placeholder="Client ID" value="${esc(store.get("clientId") || "")}" autocomplete="off" autocapitalize="off" spellcheck="false">
@@ -310,43 +472,90 @@ function viewSetup(error = ""){
   };
 }
 
-function viewLogin(error = ""){
+function viewLogin(error = "", info = ""){
   document.getElementById("btnSettings").classList.remove("hidden");
   app.innerHTML = `
     ${error ? msg(esc(error), "err") : ""}
-    <p>Mischt deine Playlists wirklich fair: jeder Song genau einmal, jeder mit derselben Wahrscheinlichkeit.</p>
+    ${info ? msg(esc(info), "ok") : ""}
+    <p>Mischt deine Playlists wirklich fair: jeder Song genau einmal, jeder mit derselben Chance.</p>
     <button id="btnLogin">Mit Spotify einloggen</button>`;
   document.getElementById("btnLogin").onclick = login;
 }
 
-async function viewPlaylists(){
+/* ---------- Startseite ---------- */
+let multiMode = false;
+const selected = new Map();   // id -> name
+
+async function viewHome(){
   document.getElementById("btnSettings").classList.remove("hidden");
   loading("Lade deine Playlists …");
-  if (!me) me = await api("/me");
-  const all = await getAll("/me/playlists?limit=50");
+  await ensureMe();
+  const all = await getPlaylists();
   const targets = new Set(Object.values(store.get("targets", {})));
   const isShuffleList = p => targets.has(p.id) || /\(Fair Shuffle\)\s*$/i.test(p.name || "");
-  const mine = all.filter(p => p && (p.owner && p.owner.id === me.id || p.collaborative) && !isShuffleList(p));
-  const others = all.filter(p => p && !(p.owner && p.owner.id === me.id || p.collaborative));
+  const own = p => p.owner && p.owner.id === me.id || p.collaborative;
+  const mine = all.filter(p => p && own(p) && !isShuffleList(p));
+  const others = all.filter(p => p && !own(p));
   const count = p => ((p.items || p.tracks || {}).total ?? "?");
+  const last = store.get("last");
+  const lastTarget = last && store.get("targets", {})[last.id];
+
+  const card = (id, name, sub, img) => `
+    <div class="card pl ${selected.has(id) ? "sel" : ""}" data-id="${esc(id)}" data-name="${esc(name)}">
+      ${multiMode ? `<div class="chk">${selected.has(id) ? "✓" : ""}</div>` : ""}
+      ${img ? `<img src="${esc(img)}" alt="">` : `<div class="ph">${id === "liked" ? "💚" : "🎵"}</div>`}
+      <div class="grow"><div class="t">${esc(name)}</div><div class="s">${esc(sub)}</div></div>
+    </div>`;
 
   app.innerHTML = `
-    <p>Hallo ${esc(me.display_name || me.id)}! Wähle, was gemischt werden soll:</p>
+    ${lastTarget && !multiMode ? `
+      <div class="card" id="quick">
+        <p style="margin-top:0">Zuletzt gemischt</p>
+        <h3>${esc(last.name)}</h3>
+        <div id="prog">${spinMsg("Prüfe, wo du gerade bist …")}</div>
+        <div class="row">
+          <button id="qNew">▶ Neue Runde</button>
+          <button class="sec" id="qResume">⏯ Weiterhören</button>
+        </div>
+        <div id="qOut"></div>
+      </div>` : ""}
+    <div class="row" style="align-items:center">
+      <p style="flex:2">${multiMode ? "Tippe die Playlists an, die zusammen gemischt werden sollen:" : `Hallo ${esc(me.display_name || me.id)}! Was soll gemischt werden?`}</p>
+      <button class="small sec" id="btnMulti" style="flex:none">${multiMode ? "✕ Abbrechen" : "☑ Mehrere"}</button>
+    </div>
     <input type="search" id="search" placeholder="🔍 Playlist suchen …" autocomplete="off" style="margin:6px 0 4px">
     <p id="noHits" class="hidden">Keine Playlist gefunden.</p>
-    <div class="card pl" data-id="liked" data-name="Lieblingssongs">
-      <div class="ph">💚</div><div class="grow"><div class="t">Lieblingssongs</div><div class="s">Deine gespeicherten Songs</div></div>
-    </div>
-    ${mine.map(p => `
-      <div class="card pl" data-id="${esc(p.id)}" data-name="${esc(p.name)}">
-        ${p.images && p.images[0] ? `<img src="${esc(p.images[p.images.length-1].url)}" alt="">` : `<div class="ph">🎵</div>`}
-        <div class="grow"><div class="t">${esc(p.name)}</div><div class="s">${count(p)} Titel</div></div>
-      </div>`).join("")}
-    ${others.length ? `<p style="margin-top:18px">${others.length} gefolgte Playlist(s) von anderen werden nicht angezeigt – Spotify erlaubt Apps wie dieser nur Zugriff auf eigene Playlists. Tipp: In Spotify die Playlist kopieren („Zu anderer Playlist hinzufügen“ → neue Playlist), dann taucht sie hier auf.</p>` : ""}
+    ${card("liked", "Lieblingssongs", "Deine gespeicherten Songs")}
+    ${mine.map(p => card(p.id, p.name, count(p) + " Titel", p.images && p.images[0] && p.images[p.images.length - 1].url)).join("")}
+    ${others.length ? `<p style="margin-top:18px">${others.length} gefolgte Playlist(s) von anderen werden nicht angezeigt – Spotify erlaubt Apps wie dieser nur Zugriff auf eigene Playlists. Tipp: In Spotify die Playlist kopieren, dann taucht sie hier auf.</p>` : ""}
+    ${multiMode ? `<button class="sticky" id="btnMixSel" ${selected.size < 2 ? "disabled" : ""}>Ausgewählte zusammen mischen (${selected.size})</button>` : ""}
   `;
-  app.querySelectorAll(".pl").forEach(el => el.onclick = () => viewShuffle(el.dataset.id, el.dataset.name));
+
+  // Liste & Mehrfachauswahl
+  app.querySelectorAll(".pl").forEach(el => el.onclick = () => {
+    if (!multiMode) return viewShuffle(el.dataset.id, el.dataset.name);
+    const id = el.dataset.id;
+    if (selected.has(id)) selected.delete(id); else selected.set(id, el.dataset.name);
+    el.classList.toggle("sel", selected.has(id));
+    el.querySelector(".chk").textContent = selected.has(id) ? "✓" : "";
+    const b = document.getElementById("btnMixSel");
+    b.textContent = `Ausgewählte zusammen mischen (${selected.size})`;
+    b.disabled = selected.size < 2;
+  });
+  document.getElementById("btnMulti").onclick = () => { multiMode = !multiMode; selected.clear(); viewHome().catch(showError); };
+  const mixSel = document.getElementById("btnMixSel");
+  if (mixSel) mixSel.onclick = () => {
+    const entries = [...selected.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const id = "multi:" + entries.map(e => e[0]).join(",");
+    const names = entries.map(e => e[1]);
+    const name = names.length > 3 ? names.slice(0, 3).join(" + ") + ` + ${names.length - 3} weitere` : names.join(" + ");
+    multiMode = false; selected.clear();
+    viewShuffle(id, name);
+  };
+
+  // Suche
   const search = document.getElementById("search");
-  const norm = t => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const norm = t => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   search.oninput = () => {
     const q = norm(search.value.trim());
     let hits = 0;
@@ -357,54 +566,84 @@ async function viewPlaylists(){
     });
     document.getElementById("noHits").classList.toggle("hidden", hits > 0);
   };
+
+  // Ein-Knopf-Start + Fortschritt
+  if (lastTarget && !multiMode) {
+    const prog = document.getElementById("prog"), qOut = document.getElementById("qOut");
+    getProgress(lastTarget).then(p => {
+      if (p.index < 0) { prog.innerHTML = `<p>${p.total} Songs · noch nicht angefangen</p>`; return; }
+      const nr = p.index + 1, done = p.finished || nr >= p.total;
+      prog.innerHTML = `
+        <p>${p.playing ? "▶ Läuft gerade: " : ""}Song <b style="color:var(--text)">${nr}</b> von ${p.total}</p>
+        <div class="bar"><div style="width:${Math.round(nr / p.total * 100)}%"></div></div>
+        ${done ? `<p style="color:var(--accent)">Runde fertig – Zeit für eine neue Runde!</p>` : ""}`;
+    }).catch(() => { prog.innerHTML = `<p>Fortschritt gerade nicht abrufbar.</p>`; });
+
+    document.getElementById("qNew").onclick = async () => {
+      const b1 = document.getElementById("qNew"), b2 = document.getElementById("qResume");
+      b1.disabled = b2.disabled = true;
+      try {
+        const r = await runMix(last.id, last.name, t => qOut.innerHTML = spinMsg(t));
+        qOut.innerHTML = resultHtml(r);
+        prog.innerHTML = `<p>Song <b style="color:var(--text)">1</b> von ${r.shuffled.length}</p><div class="bar"><div style="width:0%"></div></div>`;
+        try { await playFrom(r.targetId); qOut.insertAdjacentHTML("afterbegin", msg("▶ Neue Runde läuft!", "ok")); }
+        catch(e) { qOut.insertAdjacentHTML("afterbegin", msg(esc(playError(e)) + `<br><a href="https://open.spotify.com/playlist/${esc(r.targetId)}" target="_blank" rel="noopener" style="color:inherit">In Spotify öffnen</a>`, "err")); }
+      } catch(e) { qOut.innerHTML = msg(esc(friendly(e)), "err"); }
+      b1.disabled = b2.disabled = false;
+    };
+    document.getElementById("qResume").onclick = async () => {
+      try { await resume(lastTarget); qOut.innerHTML = msg("▶ Weiter geht's!", "ok"); }
+      catch(e) { qOut.innerHTML = msg(esc(playError(e)) + `<br><a href="https://open.spotify.com/playlist/${esc(lastTarget)}" target="_blank" rel="noopener" style="color:inherit">In Spotify öffnen</a>`, "err"); }
+    };
+  }
 }
 
-function topArtists(list){
-  const c = new Map();
-  list.forEach(t => { const a = artistOf(t) || "?"; c.set(a, (c.get(a) || 0) + 1); });
-  const top = [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
-  return "Meiste Songs: " + top.map(([a, n]) => `${esc(a)} ${n}× (${Math.round(n / list.length * 100)} %)`).join(", ");
-}
-
+/* ---------- Misch-Seite einer Playlist ---------- */
 function viewShuffle(id, name){
+  const o = getOpts(id);
+  const isMulti = id.startsWith("multi:");
   app.innerHTML = `
     <button class="sec" id="back">← Zurück</button>
     <h2>${esc(name)}</h2>
-    <p>Jeder Song kommt genau einmal, in komplett zufälliger Reihenfolge.</p>
+    <p>Jeder Song kommt genau einmal, gleichmäßig und zufällig verteilt.${isMulti ? " Die ausgewählten Playlists werden zu einer gemeinsamen Shuffle-Playlist zusammengefasst." : ""}</p>
     <div class="card">
-      <label class="opt"><input type="checkbox" id="oSpread" ${store.get("spread_" + id, false) ? "checked" : ""}>
-        <span>Gleiche Künstler nicht hintereinander<small>Zwei Songs vom selben Künstler kommen nicht direkt nacheinander (soweit möglich).</small></span></label>
+      <label class="opt"><input type="checkbox" id="oSpread" ${o.spread ? "checked" : ""}>
+        <span>Gleiche Künstler nie hintereinander<small>Zusätzliche Absicherung: zwei Songs vom selben Künstler kommen nie direkt nacheinander (soweit möglich).</small></span></label>
+      <label class="opt"><input type="checkbox" id="oDedupe" ${o.dedupe ? "checked" : ""}>
+        <span>Doppelte Songs nur einmal<small>Erkennt z. B. denselben Song vom Album und von einer Best-of oder als Remaster. Live- und Acoustic-Versionen bleiben eigene Songs.</small></span></label>
+      <button class="sec" id="btnArtists">🎤 Künstler ausschließen${o.excl.length ? ` (${o.excl.length} ausgeschlossen)` : ""}</button>
+      <div id="artists"></div>
     </div>
     <button id="go">Mischen & speichern</button>
     <div id="out"></div>`;
-  document.getElementById("back").onclick = () => viewPlaylists().catch(showError);
+
+  const save = () => {
+    const cur = getOpts(id);
+    cur.spread = document.getElementById("oSpread").checked;
+    cur.dedupe = document.getElementById("oDedupe").checked;
+    setOpts(id, cur);
+  };
+  document.getElementById("oSpread").onchange = save;
+  document.getElementById("oDedupe").onchange = save;
+  document.getElementById("back").onclick = () => viewHome().catch(showError);
+  document.getElementById("btnArtists").onclick = () => showArtists(id);
+
   document.getElementById("go").onclick = async () => {
-    const spread = document.getElementById("oSpread").checked;
-    store.set("spread_" + id, spread);
+    save();
     const out = document.getElementById("out");
     const btn = document.getElementById("go"); btn.disabled = true;
     try {
-      out.innerHTML = msg(`<span class="spin"></span>Lade Songs …`);
-      const tracks = await loadTracks(id, (n, total) => { out.innerHTML = msg(`<span class="spin"></span>Lade Songs … ${n}${total ? " / " + total : ""}`); });
-      if (!tracks.length) { out.innerHTML = msg("Keine abspielbaren Songs gefunden.", "err"); btn.disabled = false; return; }
-      const shuffled = fairShuffle(tracks, spread);
-      out.innerHTML = msg(`<span class="spin"></span>Speichere ${shuffled.length} Songs in Spotify …`);
-      const targetId = await saveShuffled(id, name, shuffled);
+      const r = await runMix(id, name, t => out.innerHTML = spinMsg(t));
       out.innerHTML = `
-        ${msg(`✅ ${shuffled.length} Songs fair gemischt und gespeichert.<br>${topArtists(shuffled)}<br>Wichtig: In Spotify <b>Shuffle AUS</b> und <b>Wiederholen AUS</b> lassen.`, "ok")}
+        ${resultHtml(r)}
         <button id="play">▶︎ Jetzt abspielen</button>
-        <a class="btn sec" href="https://open.spotify.com/playlist/${esc(targetId)}" target="_blank" rel="noopener">In Spotify öffnen</a>
+        <a class="btn sec" href="https://open.spotify.com/playlist/${esc(r.targetId)}" target="_blank" rel="noopener">In Spotify öffnen</a>
         <div class="card"><b>Die ersten Songs:</b>
-          <ol class="prev">${shuffled.slice(0, 15).map(t => `<li>${esc(t.name)} <span>– ${esc(artistOf(t))}</span></li>`).join("")}</ol>
+          <ol class="prev">${r.shuffled.slice(0, 15).map(t => `<li>${esc(t.name)} <span>– ${esc(artistOf(t))}</span></li>`).join("")}</ol>
         </div>`;
       document.getElementById("play").onclick = async () => {
-        try { await playNow(targetId); out.insertAdjacentHTML("afterbegin", msg("▶︎ Läuft!", "ok")); }
-        catch(e) {
-          const hint = e.status === 404 ? "Kein aktives Gerät gefunden – öffne kurz die Spotify-App, starte irgendeinen Song und versuch es nochmal."
-                     : e.status === 403 ? "Spotify erlaubt das direkte Abspielen hier nicht (Premium nötig oder für Entwickler-Apps gesperrt). Nutze „In Spotify öffnen“."
-                     : e.message;
-          out.insertAdjacentHTML("afterbegin", msg(esc(hint), "err"));
-        }
+        try { await playFrom(r.targetId); out.insertAdjacentHTML("afterbegin", msg("▶︎ Läuft!", "ok")); }
+        catch(e) { out.insertAdjacentHTML("afterbegin", msg(esc(playError(e)), "err")); }
       };
     } catch(e) {
       out.innerHTML = msg(esc(friendly(e)), "err");
@@ -413,6 +652,45 @@ function viewShuffle(id, name){
   };
 }
 
+async function showArtists(id){
+  const box = document.getElementById("artists");
+  const btn = document.getElementById("btnArtists");
+  if (box.dataset.open) { box.innerHTML = ""; delete box.dataset.open; return; }
+  box.dataset.open = "1";
+  box.innerHTML = spinMsg("Lade Songs …");
+  try {
+    const tracks = await getTracks(id, n => box.innerHTML = spinMsg("Lade Songs … " + n));
+    const counts = new Map();
+    tracks.forEach(t => { const a = artistOf(t); if (a) counts.set(a, (counts.get(a) || 0) + 1); });
+    const artists = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const excl = new Set(getOpts(id).excl);
+    box.innerHTML = `
+      <p>Haken weg = Künstler kommt in der Shuffle-Playlist nicht vor.</p>
+      <input type="search" id="aSearch" placeholder="🔍 Künstler suchen …" autocomplete="off">
+      <div class="row" style="margin:8px 0"><button class="small sec" id="aAll">Alle an</button><button class="small sec" id="aNone">Alle aus</button></div>
+      <div class="alist">${artists.map(([a, n]) => `
+        <label class="opt" data-a="${esc(a)}"><input type="checkbox" ${excl.has(a) ? "" : "checked"}>
+          <span>${esc(a)} <small>${n} Song(s)</small></span></label>`).join("")}</div>`;
+    const update = () => {
+      const ex = [...box.querySelectorAll(".alist label")].filter(l => !l.querySelector("input").checked).map(l => l.dataset.a);
+      const cur = getOpts(id); cur.excl = ex; setOpts(id, cur);
+      btn.textContent = "🎤 Künstler ausschließen" + (ex.length ? ` (${ex.length} ausgeschlossen)` : "");
+    };
+    box.querySelectorAll(".alist input").forEach(i => i.onchange = update);
+    const setAll = v => { box.querySelectorAll(".alist label:not(.hidden) input").forEach(i => i.checked = v); update(); };
+    document.getElementById("aAll").onclick = () => setAll(true);
+    document.getElementById("aNone").onclick = () => setAll(false);
+    const norm = t => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+    document.getElementById("aSearch").oninput = e => {
+      const q = norm(e.target.value.trim());
+      box.querySelectorAll(".alist label").forEach(l => l.classList.toggle("hidden", !!q && !norm(l.dataset.a).includes(q)));
+    };
+  } catch(e) {
+    box.innerHTML = msg(esc(friendly(e)), "err");
+  }
+}
+
+/* ---------- Einstellungen ---------- */
 function viewSettings(){
   app.innerHTML = `
     <button class="sec" id="back">← Zurück</button>
@@ -427,10 +705,9 @@ function viewSettings(){
   document.getElementById("chg").onclick = () => { store.del("token"); viewSetup(); };
   document.getElementById("out").onclick = logout;
 }
-function alertMsg(t){ app.insertAdjacentHTML("afterbegin", msg(esc(t), "ok")); }
 
 function friendly(e){
-  if (e.status === 403) return "Spotify verweigert den Zugriff (403). Prüfe: Bist du im Spotify-Dashboard bei „User Management“ eingetragen und hat der App-Besitzer Premium? Details: " + e.message;
+  if (e.status === 403) return "Spotify verweigert den Zugriff (403). Prüfe: Bist du im Spotify-Dashboard bei „User Management“ eingetragen? Details: " + e.message;
   return e.message || String(e);
 }
 function showError(e){
@@ -444,11 +721,17 @@ function showError(e){
 function render(){
   if (!store.get("clientId")) return viewSetup();
   if (!store.get("token")) return viewLogin();
-  viewPlaylists().catch(showError);
+  if (store.get("scopeVer") !== SCOPE_VER) {
+    store.del("token");
+    return viewLogin("", "Neue Funktionen sind da (Fortschritt & Weiterhören) – bitte einmal neu einloggen.");
+  }
+  viewHome().catch(showError);
 }
 
 document.getElementById("btnSettings").onclick = viewSettings;
-if ("serviceWorker" in navigator) { navigator.serviceWorker.register("sw.js").catch(() => {}); }
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(r => r.update()).catch(() => {});
+}
 
 (async () => {
   try { await handleRedirect(); }
