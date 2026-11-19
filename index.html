@@ -66,7 +66,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 8</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 9</p>
 
 <script>
 "use strict";
@@ -114,6 +114,8 @@ function fisherYates(arr){
   return a;
 }
 const artistOf = t => (t.artists && t.artists[0] && t.artists[0].name) || (t.show && t.show.name) || "";
+// alle beteiligten Künstler (Hauptkünstler + Gastkünstler)
+const allArtists = t => t.artists && t.artists.length ? t.artists.map(a => a.name).filter(Boolean) : (t.show && t.show.name ? [t.show.name] : []);
 
 /* Ausgewogener Shuffle:
    Die Songs jedes Künstlers werden gleichmäßig über die ganze Playlist verteilt
@@ -283,24 +285,38 @@ async function getPlaylists(force){
   if (!playlistCache || force) playlistCache = await getAll("/me/playlists?limit=50");
   return playlistCache;
 }
-async function loadOne(id, onProgress){
+// Lädt eine Playlist und zählt mit, was nicht abspielbar ist
+async function loadOne(id, onProgress, stats){
   const raw = id === "liked"
     ? await getAll("/me/tracks?limit=50", onProgress)
     : await getAll("/playlists/" + id + "/items?limit=50", onProgress);
-  return raw
-    .map(it => it.item || it.track)
-    .filter(t => t && t.uri && t.id && !t.uri.startsWith("spotify:local") && t.is_local !== true);
+  const out = [];
+  for (const it of raw) {
+    const t = it && (it.item || it.track);
+    if (stats) stats.entries++;
+    if (!t || !t.uri) { if (stats) stats.unavailable++; continue; }
+    if (t.is_local || it.is_local || t.uri.startsWith("spotify:local")) { if (stats) stats.local++; continue; }
+    if (!t.id) { if (stats) stats.unavailable++; continue; }
+    out.push(t);
+  }
+  return out;
 }
+const statsCache = new Map();   // Quelle -> { entries, local, unavailable, exactDupes, songs }
 // Quelle = "liked", eine Playlist-ID oder "multi:ID1,ID2,..."
 async function getTracks(sourceId, onProgress){
   if (trackCache.has(sourceId)) return trackCache.get(sourceId);
   const ids = sourceId.startsWith("multi:") ? sourceId.slice(6).split(",") : [sourceId];
   let all = [], done = 0;
+  const stats = { entries: 0, local: 0, unavailable: 0, exactDupes: 0, songs: 0 };
   for (const id of ids) {
-    const part = await loadOne(id, (n, total) => onProgress && onProgress(done + n, null));
+    const part = await loadOne(id, (n, total) => onProgress && onProgress(done + n, null), stats);
     done += part.length; all = all.concat(part);
   }
+  const before = all.length;
   all = removeDuplicates(all, false);           // exakt gleiche Songs immer nur einmal
+  stats.exactDupes = before - all.length;
+  stats.songs = all.length;
+  statsCache.set(sourceId, stats);
   trackCache.set(sourceId, all);
   return all;
 }
@@ -348,7 +364,7 @@ async function runMix(sourceId, sourceName, status){
   const dupes = before - tracks.length;
   const excl = new Set(o.excl);
   const beforeExcl = tracks.length;
-  tracks = tracks.filter(t => !excl.has(artistOf(t)));
+  tracks = tracks.filter(t => !allArtists(t).some(a => excl.has(a)));
   const excluded = beforeExcl - tracks.length;
   if (!tracks.length) throw new Error("Keine Songs übrig – sind alle Künstler ausgeschlossen?");
   const shuffled = fairShuffle(tracks, o.spread);
@@ -357,7 +373,7 @@ async function runMix(sourceId, sourceName, status){
   store.set("order_" + targetId, shuffled.map(t => t.uri));
   store.del("pos_" + targetId);
   store.set("last", { id: sourceId, name: sourceName });
-  return { targetId, shuffled, dupes, excluded };
+  return { targetId, shuffled, dupes, excluded, stats: statsCache.get(sourceId) };
 }
 
 /* ================== Abspielen & Fortschritt ================== */
@@ -441,11 +457,19 @@ function topArtists(list){
   const top = [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
   return "Meiste Songs: " + top.map(([a, n]) => `${esc(a)} ${n}× (${Math.round(n / list.length * 100)} %)`).join(", ");
 }
+function statsText(st){
+  if (!st) return "";
+  const skip = [];
+  if (st.local) skip.push(`${st.local} lokale Datei(en)`);
+  if (st.unavailable) skip.push(`${st.unavailable} nicht mehr verfügbar`);
+  if (st.exactDupes) skip.push(`${st.exactDupes} doppelt eingetragen`);
+  return `Playlist: ${st.entries} Einträge → ${st.songs} abspielbare Songs` + (skip.length ? ` (übersprungen: ${skip.join(", ")})` : "");
+}
 function resultHtml(r){
   const extra = [];
   if (r.dupes) extra.push(`${r.dupes} doppelte Song(s) entfernt`);
   if (r.excluded) extra.push(`${r.excluded} Song(s) von ausgeschlossenen Künstlern weggelassen`);
-  return msg(`✅ ${r.shuffled.length} Songs fair gemischt und gespeichert.<br>${topArtists(r.shuffled)}` +
+  return msg(`✅ ${r.shuffled.length} Songs fair gemischt und gespeichert.<br>${esc(statsText(r.stats))}<br>${topArtists(r.shuffled)}` +
     (extra.length ? `<br>${extra.join(" · ")}` : "") +
     `<br>Wichtig: In Spotify <b>Shuffle AUS</b> und <b>Wiederholen AUS</b>.`, "ok");
 }
@@ -490,7 +514,8 @@ async function viewHome(){
   document.getElementById("btnSettings").classList.remove("hidden");
   loading("Lade deine Playlists …");
   await ensureMe();
-  const all = await getPlaylists();
+  trackCache.clear(); statsCache.clear();      // immer aktuelle Daten, falls Playlists in Spotify geändert wurden
+  const all = await getPlaylists(true);
   const targets = new Set(Object.values(store.get("targets", {})));
   const isShuffleList = p => targets.has(p.id) || /\(Fair Shuffle\)\s*$/i.test(p.name || "");
   const own = p => p.owner && p.owner.id === me.id || p.collaborative;
@@ -508,6 +533,9 @@ async function viewHome(){
     </div>`;
 
   app.innerHTML = `
+    ${store.get("scopeVer") !== SCOPE_VER ? `
+      <div class="msg">Damit „Song x von y“ auch nach dem Schließen von Spotify stimmt, braucht die App eine zusätzliche Erlaubnis. Alles andere funktioniert auch so.
+        <button class="small" id="btnRelogin" style="margin-top:8px">Einmal neu verbinden</button></div>` : ""}
     ${lastTarget && !multiMode ? `
       <div class="card" id="quick">
         <p style="margin-top:0">Zuletzt gemischt</p>
@@ -530,6 +558,9 @@ async function viewHome(){
     ${others.length ? `<p style="margin-top:18px">${others.length} gefolgte Playlist(s) von anderen werden nicht angezeigt – Spotify erlaubt Apps wie dieser nur Zugriff auf eigene Playlists. Tipp: In Spotify die Playlist kopieren, dann taucht sie hier auf.</p>` : ""}
     ${multiMode ? `<button class="sticky" id="btnMixSel" ${selected.size < 2 ? "disabled" : ""}>Ausgewählte zusammen mischen (${selected.size})</button>` : ""}
   `;
+
+  const rl = document.getElementById("btnRelogin");
+  if (rl) rl.onclick = login;
 
   // Liste & Mehrfachauswahl
   app.querySelectorAll(".pl").forEach(el => el.onclick = () => {
@@ -660,17 +691,21 @@ async function showArtists(id){
   box.innerHTML = spinMsg("Lade Songs …");
   try {
     const tracks = await getTracks(id, n => box.innerHTML = spinMsg("Lade Songs … " + n));
-    const counts = new Map();
-    tracks.forEach(t => { const a = artistOf(t); if (a) counts.set(a, (counts.get(a) || 0) + 1); });
+    const counts = new Map(), guest = new Map();
+    tracks.forEach(t => allArtists(t).forEach((a, i) => {
+      counts.set(a, (counts.get(a) || 0) + 1);
+      if (i > 0) guest.set(a, (guest.get(a) || 0) + 1);
+    }));
     const artists = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     const excl = new Set(getOpts(id).excl);
     box.innerHTML = `
-      <p>Haken weg = Künstler kommt in der Shuffle-Playlist nicht vor.</p>
+      <p>${esc(statsText(statsCache.get(id)))} · ${artists.length} Künstler</p>
+      <p>Haken weg = Songs mit diesem Künstler (auch als Gast) kommen in der Shuffle-Playlist nicht vor.</p>
       <input type="search" id="aSearch" placeholder="🔍 Künstler suchen …" autocomplete="off">
       <div class="row" style="margin:8px 0"><button class="small sec" id="aAll">Alle an</button><button class="small sec" id="aNone">Alle aus</button></div>
       <div class="alist">${artists.map(([a, n]) => `
         <label class="opt" data-a="${esc(a)}"><input type="checkbox" ${excl.has(a) ? "" : "checked"}>
-          <span>${esc(a)} <small>${n} Song(s)</small></span></label>`).join("")}</div>`;
+          <span>${esc(a)} <small>${n} Song(s)${guest.get(a) ? `, davon ${guest.get(a)} als Gast` : ""}</small></span></label>`).join("")}</div>`;
     const update = () => {
       const ex = [...box.querySelectorAll(".alist label")].filter(l => !l.querySelector("input").checked).map(l => l.dataset.a);
       const cur = getOpts(id); cur.excl = ex; setOpts(id, cur);
@@ -721,10 +756,6 @@ function showError(e){
 function render(){
   if (!store.get("clientId")) return viewSetup();
   if (!store.get("token")) return viewLogin();
-  if (store.get("scopeVer") !== SCOPE_VER) {
-    store.del("token");
-    return viewLogin("", "Neue Funktionen sind da (Fortschritt & Weiterhören) – bitte einmal neu einloggen.");
-  }
   viewHome().catch(showError);
 }
 
