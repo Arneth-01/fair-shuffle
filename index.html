@@ -66,7 +66,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 9</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 10</p>
 
 <script>
 "use strict";
@@ -735,8 +735,29 @@ function viewSettings(){
       <p>Redirect URI: <code>${esc(REDIRECT_URI)}</code></p>
       <button class="sec" id="chg">Client ID ändern</button>
       <button class="sec" id="out">Ausloggen</button>
+    </div>
+    <div class="card">
+      <h3>Freunde einladen</h3>
+      <p>Schick diesen Link an deine Leute – sie müssen nur noch draufdrücken und sich einloggen:</p>
+      <p><code id="inv">${esc(inviteLink())}</code></p>
+      <div class="row">
+        <button id="invShare">📤 Teilen</button>
+        <button class="sec" id="invCopy">Kopieren</button>
+      </div>
+      <p id="invMsg"></p>
+      <p><b>Wichtig:</b> Trag jede Person vorher auf <b>developer.spotify.com/dashboard</b> → deine App → Settings → <b>User Management</b> mit Name und Spotify-E-Mail ein (max. 5 Personen).</p>
     </div>`;
   document.getElementById("back").onclick = render;
+  const invMsg = t => document.getElementById("invMsg").textContent = t;
+  document.getElementById("invCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText(inviteLink()); invMsg("✅ Link kopiert!"); }
+    catch(e) { invMsg("Kopieren ging nicht – markiere den Link oben und kopiere ihn von Hand."); }
+  };
+  document.getElementById("invShare").onclick = async () => {
+    const text = "🔀 Fair Shuffle – mischt deine Spotify-Playlists richtig zufällig. Einfach Link öffnen und mit Spotify einloggen. In Spotify dann Shuffle AUS und Wiederholen AUS lassen!";
+    if (navigator.share) { try { await navigator.share({ title: "Fair Shuffle", text, url: inviteLink() }); } catch(e) {} }
+    else { try { await navigator.clipboard.writeText(text + "\n" + inviteLink()); invMsg("✅ Text mit Link kopiert – jetzt z. B. in WhatsApp einfügen."); } catch(e) { invMsg("Teilen geht hier nicht – nutze „Kopieren“."); } }
+  };
   document.getElementById("chg").onclick = () => { store.del("token"); viewSetup(); };
   document.getElementById("out").onclick = logout;
 }
@@ -764,7 +785,22 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(r => r.update()).catch(() => {});
 }
 
+// Einladungslink: ...?cid=CLIENT_ID  -> Client ID automatisch übernehmen
+function handleInvite(){
+  const q = new URLSearchParams(location.search);
+  const cid = (q.get("cid") || "").trim();
+  if (!cid) return false;
+  history.replaceState(null, "", REDIRECT_URI);
+  if (!/^[a-f0-9]{32}$/i.test(cid)) return false;
+  if (store.get("clientId") !== cid) { store.set("clientId", cid); store.del("token"); }
+  return !store.get("token");
+}
+const inviteLink = () => REDIRECT_URI + "?cid=" + encodeURIComponent(store.get("clientId") || "");
+
 (async () => {
+  if (handleInvite()) {
+    return viewLogin("", "Du wurdest zu Fair Shuffle eingeladen! 🎉 Tippe auf „Mit Spotify einloggen“. (Falls eine Fehlermeldung kommt: Die Person, die dich eingeladen hat, muss dich zuerst bei Spotify freischalten.)");
+  }
   try { await handleRedirect(); }
   catch(e) { store.del("token"); viewLogin(e.message); return; }
   render();
