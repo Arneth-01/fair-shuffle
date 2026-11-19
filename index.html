@@ -94,8 +94,6 @@ function fisherYates(arr){
 }
 const artistOf = t => (t.artists && t.artists[0] && t.artists[0].name) || (t.show && t.show.name) || "";
 
-/* Fairer Shuffle: komplette Zufalls-Permutation (Fisher-Yates).
-   Jeder Song kommt genau einmal vor, jeder hat auf jedem Platz dieselbe Wahrscheinlichkeit. */
 // Optional: zwei Songs vom selben Künstler nicht direkt hintereinander (wo möglich)
 function spreadArtists(a){
   const same = (x, y) => x && y && artistOf(x) && artistOf(x) === artistOf(y);
@@ -118,7 +116,36 @@ function spreadArtists(a){
   }
   return a;
 }
-const fairShuffle = (tracks, spread) => spread ? spreadArtists(fisherYates(tracks)) : fisherYates(tracks);
+// Zufallszahl 0 .. <1 (kryptografisch)
+function rand01(){ const b = new Uint32Array(1); crypto.getRandomValues(b); return b[0] / 0x100000000; }
+
+/* Ausgewogener Shuffle:
+   Die Songs jedes Künstlers werden gleichmäßig über die ganze Playlist verteilt
+   (zufälliger Startpunkt + gleicher Abstand + etwas Zufallsschwankung).
+   Jeder Song kommt genau einmal, und jeder Song hat weiterhin auf jeder Position
+   dieselbe Chance – aber Häufchen vom selben Künstler werden vermieden. */
+function balancedShuffle(tracks){
+  const groups = new Map();
+  for (const t of tracks) {
+    const k = artistOf(t) || ("__" + t.id);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(t);
+  }
+  const placed = [];
+  for (const list of groups.values()) {
+    const g = fisherYates(list);
+    const n = g.length, gap = 1 / n;
+    const start = rand01() * gap;
+    g.forEach((t, i) => {
+      const jitter = (rand01() - 0.5) * gap * 0.4;   // ±20 % des Abstands
+      placed.push({ t, pos: (start + i * gap + jitter + 1) % 1 });
+    });
+  }
+  placed.sort((a, b) => a.pos - b.pos);
+  return placed.map(p => p.t);
+}
+
+const fairShuffle = (tracks, spread) => spread ? spreadArtists(balancedShuffle(tracks)) : balancedShuffle(tracks);
 
 /* ================== Login (PKCE, kein Server nötig) ================== */
 function randomString(len){
