@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e0e10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fair Shuffle">
+<title>Fair Shuffle</title>
+<style>
+  :root{--bg:#0e0e10;--card:#1a1a1f;--card2:#24242b;--text:#f2f2f2;--muted:#9a9aa5;--accent:#1ed760;--err:#ff5a5a}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       padding:env(safe-area-inset-top) 16px calc(env(safe-area-inset-bottom) + 24px)}
+  header{display:flex;align-items:center;justify-content:space-between;padding:18px 0 10px}
+  h1{font-size:22px;margin:0}
+  h2{font-size:18px;margin:18px 0 8px}
+  p{color:var(--muted);line-height:1.45;margin:6px 0}
+  .card{background:var(--card);border-radius:14px;padding:14px;margin:10px 0}
+  .pl{display:flex;align-items:center;gap:12px;cursor:pointer}
+  .pl img,.pl .ph{width:52px;height:52px;border-radius:8px;object-fit:cover;background:var(--card2);flex:none;display:flex;align-items:center;justify-content:center;font-size:22px}
+  .pl .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pl .s{color:var(--muted);font-size:13px}
+  .grow{flex:1;min-width:0}
+  button,.btn{display:block;width:100%;border:0;border-radius:999px;padding:14px 18px;font-size:16px;font-weight:700;
+         background:var(--accent);color:#000;margin:10px 0;text-align:center;text-decoration:none;cursor:pointer}
+  button.sec,.btn.sec{background:var(--card2);color:var(--text)}
+  button.small{display:inline-block;width:auto;padding:8px 14px;font-size:14px;margin:0}
+  button:disabled{opacity:.5}
+  input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid #333;background:var(--card2);color:var(--text);font-size:15px}
+  label.opt{display:flex;gap:10px;align-items:flex-start;padding:10px 0;color:var(--text)}
+  label.opt input{width:20px;height:20px;margin-top:2px;accent-color:var(--accent);flex:none}
+  label.opt small{display:block;color:var(--muted)}
+  code{background:var(--card2);padding:2px 6px;border-radius:6px;word-break:break-all;font-size:13px}
+  .msg{padding:12px;border-radius:10px;margin:10px 0;background:var(--card2)}
+  .msg.err{background:#3a1717;color:#ffd0d0}
+  .msg.ok{background:#123a20;color:#c9ffd9}
+  ol.prev{padding-left:22px;margin:6px 0;color:var(--text)}
+  ol.prev li{padding:3px 0}
+  ol.prev li span{color:var(--muted)}
+  .hidden{display:none}
+  .spin{display:inline-block;width:16px;height:16px;border:2px solid var(--muted);border-top-color:var(--accent);border-radius:50%;animation:r 0.8s linear infinite;vertical-align:middle;margin-right:8px}
+  @keyframes r{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🔀 Fair Shuffle</h1>
+  <button class="small sec hidden" id="btnSettings">⚙︎</button>
+</header>
+<div id="app"></div>
+
+<script>
+"use strict";
+/* ================== Einstellungen & Speicher ================== */
+const SCOPES = [
+  "playlist-read-private","playlist-read-collaborative",
+  "playlist-modify-private","playlist-modify-public",
+  "user-library-read","user-read-playback-state","user-modify-playback-state"
+].join(" ");
+const REDIRECT_URI = location.origin + location.pathname;
+const API = "https://api.spotify.com/v1";
+
+const store = {
+  get(k, d=null){ try{ const v = localStorage.getItem("fs_"+k); return v===null ? d : JSON.parse(v); }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem("fs_"+k, JSON.stringify(v)); }catch(e){} },
+  del(k){ try{ localStorage.removeItem("fs_"+k); }catch(e){} }
+};
+
+const app = document.getElementById("app");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let me = null;
+
+/* ================== Zufall (kryptografisch, ohne Verzerrung) ================== */
+function randInt(n){ // 0 .. n-1
+  const limit = Math.floor(0x100000000 / n) * n;
+  const buf = new Uint32Array(1);
+  do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+  return buf[0] % n;
+}
+function fisherYates(arr){
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = randInt(i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+const artistOf = t => (t.artists && t.artists[0] && t.artists[0].name) || (t.show && t.show.name) || "";
+
+// Verhindert, dass zwei Songs vom selben Künstler direkt hintereinander kommen (wo möglich)
+function spreadArtists(a){
+  for (let i = 1; i < a.length; i++) {
+    if (artistOf(a[i]) && artistOf(a[i]) === artistOf(a[i-1])) {
+      for (let j = i + 1; j < a.length; j++) {
+        if (artistOf(a[j]) !== artistOf(a[i-1])) { [a[i], a[j]] = [a[j], a[i]]; break; }
+      }
+    }
+  }
+  return a;
+}
+
+/* Fairer Shuffle:
+   1) Jeder Song genau einmal (komplette Permutation, Fisher-Yates)
+   2) Songs, die beim letzten Mal ganz vorne lagen (also wahrscheinlich gehört wurden), kommen nach hinten
+   3) Gleiche Künstler werden auseinandergezogen */
+function fairShuffle(tracks, sourceId, opts){
+  const recent = new Set(opts.pushRecent ? store.get("recent_" + sourceId, []) : []);
+  let fresh = tracks.filter(t => !recent.has(t.id));
+  let old   = tracks.filter(t =>  recent.has(t.id));
+  fresh = fisherYates(fresh);
+  old   = fisherYates(old);
+  if (opts.spread) { spreadArtists(fresh); spreadArtists(old); }
+  const result = fresh.concat(old);
+  if (opts.spread && fresh.length && old.length && artistOf(fresh[fresh.length-1]) === artistOf(old[0])) {
+    spreadArtists(result); // Übergang zwischen den beiden Teilen glätten
+  }
+  // Merken, was diesmal vorne liegt (erstes Viertel, max. 40 Songs)
+  const n = Math.min(40, Math.max(1, Math.ceil(result.length / 4)));
+  store.set("recent_" + sourceId, result.slice(0, n).map(t => t.id));
+  return result;
+}
+
+/* ================== Login (PKCE, kein Server nötig) ================== */
+function randomString(len){
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let s = ""; for (let i = 0; i < len; i++) s += chars[randInt(chars.length)];
+  return s;
+}
+async function sha256b64url(str){
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+async function login(){
+  const verifier = randomString(64);
+  const state = randomString(16);
+  store.set("verifier", verifier); store.set("state", state);
+  const params = new URLSearchParams({
+    response_type: "code", client_id: store.get("clientId"), scope: SCOPES,
+    code_challenge_method: "S256", code_challenge: await sha256b64url(verifier),
+    redirect_uri: REDIRECT_URI, state
+  });
+  location.href = "https://accounts.spotify.com/authorize?" + params;
+}
+async function tokenRequest(body){
+  const r = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"},
+    body: new URLSearchParams(body)
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error("Login fehlgeschlagen: " + (j.error_description || j.error || r.status));
+  store.set("token", {
+    access: j.access_token,
+    refresh: j.refresh_token || (store.get("token") || {}).refresh,
+    exp: Date.now() + (j.expires_in - 60) * 1000
+  });
+}
+async function handleRedirect(){
+  const q = new URLSearchParams(location.search);
+  if (!q.has("code") && !q.has("error")) return;
+  history.replaceState(null, "", REDIRECT_URI);
+  if (q.get("error")) throw new Error("Spotify hat den Login abgelehnt: " + q.get("error"));
+  if (q.get("state") !== store.get("state")) throw new Error("Login-Status passt nicht. Bitte nochmal einloggen.");
+  await tokenRequest({
+    grant_type: "authorization_code", code: q.get("code"), redirect_uri: REDIRECT_URI,
+    client_id: store.get("clientId"), code_verifier: store.get("verifier")
+  });
+  store.del("verifier"); store.del("state");
+}
+async function accessToken(){
+  const t = store.get("token");
+  if (!t) return null;
+  if (Date.now() < t.exp) return t.access;
+  await tokenRequest({ grant_type: "refresh_token", refresh_token: t.refresh, client_id: store.get("clientId") });
+  return store.get("token").access;
+}
+function logout(){ store.del("token"); me = null; render(); }
+
+/* ================== Spotify-API ================== */
+async function api(path, opts = {}, retry = true){
+  const token = await accessToken();
+  const url = path.startsWith("http") ? path : API + path;
+  const r = await fetch(url, {
+    ...opts,
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", ...(opts.headers || {}) }
+  });
+  if (r.status === 401 && retry) {
+    const t = store.get("token"); if (t) { t.exp = 0; store.set("token", t); }
+    return api(path, opts, false);
+  }
+  if (r.status === 429) {
+    const wait = (parseInt(r.headers.get("Retry-After") || "2", 10) + 1) * 1000;
+    await new Promise(res => setTimeout(res, wait));
+    return api(path, opts, retry);
+  }
+  const text = await r.text();
+  let data = null; try { data = text ? JSON.parse(text) : null; } catch(e) {}
+  if (!r.ok) {
+    const err = new Error((data && data.error && data.error.message) || ("Fehler " + r.status));
+    err.status = r.status; err.reason = data && data.error && data.error.reason;
+    throw err;
+  }
+  return data;
+}
+async function getAll(path, onProgress){
+  const out = []; let next = path;
+  while (next) {
+    const page = await api(next);
+    out.push(...(page.items || []));
+    if (onProgress) onProgress(out.length, page.total);
+    next = page.next;
+  }
+  return out;
+}
+async function loadTracks(sourceId, onProgress){
+  const raw = sourceId === "liked"
+    ? await getAll("/me/tracks?limit=50", onProgress)
+    : await getAll("/playlists/" + sourceId + "/items?limit=50", onProgress);
+  return raw
+    .map(it => it.item || it.track)
+    .filter(t => t && t.uri && t.id && !t.uri.startsWith("spotify:local") && t.is_local !== true);
+}
+async function saveShuffled(sourceId, sourceName, tracks){
+  const map = store.get("targets", {});
+  let targetId = map[sourceId];
+  const uris = tracks.map(t => t.uri);
+  const name = "🔀 " + sourceName + " (Fair Shuffle)";
+
+  // Vorhandene Shuffle-Playlist wiederverwenden, sonst neu anlegen
+  if (targetId) {
+    try { await api("/playlists/" + targetId + "/items", { method: "PUT", body: JSON.stringify({ uris: uris.slice(0, 100) }) }); }
+    catch(e) { targetId = null; }
+  }
+  if (!targetId) {
+    const pl = await api("/me/playlists", { method: "POST", body: JSON.stringify({
+      name, public: false, description: "Fair gemischt – in Spotify mit Shuffle AUS abspielen."
+    })});
+    targetId = pl.id;
+    map[sourceId] = targetId; store.set("targets", map);
+    await api("/playlists/" + targetId + "/items", { method: "PUT", body: JSON.stringify({ uris: uris.slice(0, 100) }) });
+  }
+  for (let i = 100; i < uris.length; i += 100) {
+    await api("/playlists/" + targetId + "/items", { method: "POST", body: JSON.stringify({ uris: uris.slice(i, i + 100) }) });
+  }
+  return targetId;
+}
+async function playNow(playlistId){
+  await api("/me/player/play", { method: "PUT", body: JSON.stringify({ context_uri: "spotify:playlist:" + playlistId }) });
+  try { await api("/me/player/shuffle?state=false", { method: "PUT" }); } catch(e) {}
+}
+
+/* ================== Oberfläche ================== */
+function msg(text, type = ""){ return `<div class="msg ${type}">${text}</div>`; }
+function loading(text){ app.innerHTML = msg(`<span class="spin"></span>${esc(text)}`); }
+
+function viewSetup(error = ""){
+  document.getElementById("btnSettings").classList.add("hidden");
+  app.innerHTML = `
+    ${error ? msg(esc(error), "err") : ""}
+    <div class="card">
+      <h2 style="margin-top:0">Einrichtung (einmalig)</h2>
+      <p>1. Auf <b>developer.spotify.com/dashboard</b> eine App anlegen (Web API anhaken).</p>
+      <p>2. Als <b>Redirect URI</b> genau diese Adresse eintragen:</p>
+      <p><code id="ru">${esc(REDIRECT_URI)}</code></p>
+      <button class="sec" id="copyRu">Adresse kopieren</button>
+      <p>3. Die <b>Client ID</b> der App hier einfügen:</p>
+      <input type="text" id="cid" placeholder="Client ID" value="${esc(store.get("clientId") || "")}" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="saveCid">Speichern & mit Spotify einloggen</button>
+    </div>`;
+  document.getElementById("copyRu").onclick = () => navigator.clipboard && navigator.clipboard.writeText(REDIRECT_URI);
+  document.getElementById("saveCid").onclick = () => {
+    const v = document.getElementById("cid").value.trim();
+    if (!/^[a-f0-9]{32}$/i.test(v)) { viewSetup("Das sieht nicht nach einer Client ID aus (32 Zeichen, 0–9 und a–f)."); return; }
+    store.set("clientId", v); login();
+  };
+}
+
+function viewLogin(error = ""){
+  document.getElementById("btnSettings").classList.remove("hidden");
+  app.innerHTML = `
+    ${error ? msg(esc(error), "err") : ""}
+    <p>Mischt deine Playlists wirklich fair: jeder Song genau einmal, keine Lieblings-Bevorzugung, gleiche Künstler nicht direkt hintereinander.</p>
+    <button id="btnLogin">Mit Spotify einloggen</button>`;
+  document.getElementById("btnLogin").onclick = login;
+}
+
+async function viewPlaylists(){
+  document.getElementById("btnSettings").classList.remove("hidden");
+  loading("Lade deine Playlists …");
+  if (!me) me = await api("/me");
+  const all = await getAll("/me/playlists?limit=50");
+  const targets = new Set(Object.values(store.get("targets", {})));
+  const mine = all.filter(p => p && (p.owner && p.owner.id === me.id || p.collaborative) && !targets.has(p.id));
+  const others = all.filter(p => p && !(p.owner && p.owner.id === me.id || p.collaborative));
+  const count = p => ((p.items || p.tracks || {}).total ?? "?");
+
+  app.innerHTML = `
+    <p>Hallo ${esc(me.display_name || me.id)}! Wähle, was gemischt werden soll:</p>
+    <div class="card pl" data-id="liked" data-name="Lieblingssongs">
+      <div class="ph">💚</div><div class="grow"><div class="t">Lieblingssongs</div><div class="s">Deine gespeicherten Songs</div></div>
+    </div>
+    ${mine.map(p => `
+      <div class="card pl" data-id="${esc(p.id)}" data-name="${esc(p.name)}">
+        ${p.images && p.images[0] ? `<img src="${esc(p.images[p.images.length-1].url)}" alt="">` : `<div class="ph">🎵</div>`}
+        <div class="grow"><div class="t">${esc(p.name)}</div><div class="s">${count(p)} Titel</div></div>
+      </div>`).join("")}
+    ${others.length ? `<p style="margin-top:18px">${others.length} gefolgte Playlist(s) von anderen werden nicht angezeigt – Spotify erlaubt Apps wie dieser nur Zugriff auf eigene Playlists. Tipp: In Spotify die Playlist kopieren („Zu anderer Playlist hinzufügen“ → neue Playlist), dann taucht sie hier auf.</p>` : ""}
+  `;
+  app.querySelectorAll(".pl").forEach(el => el.onclick = () => viewShuffle(el.dataset.id, el.dataset.name));
+}
+
+function viewShuffle(id, name){
+  const o = store.get("opts", { spread: true, pushRecent: true });
+  app.innerHTML = `
+    <button class="sec" id="back">← Zurück</button>
+    <h2>${esc(name)}</h2>
+    <div class="card">
+      <label class="opt"><input type="checkbox" id="oSpread" ${o.spread ? "checked" : ""}>
+        <span>Künstler verteilen<small>Zwei Songs vom selben Künstler kommen nicht direkt hintereinander.</small></span></label>
+      <label class="opt"><input type="checkbox" id="oRecent" ${o.pushRecent ? "checked" : ""}>
+        <span>Zuletzt Gehörtes nach hinten<small>Songs, die beim letzten Mischen ganz vorne waren, landen diesmal hinten.</small></span></label>
+    </div>
+    <button id="go">Mischen & speichern</button>
+    <div id="out"></div>`;
+  document.getElementById("back").onclick = () => viewPlaylists().catch(showError);
+  document.getElementById("go").onclick = async () => {
+    const opts = { spread: document.getElementById("oSpread").checked, pushRecent: document.getElementById("oRecent").checked };
+    store.set("opts", opts);
+    const out = document.getElementById("out");
+    const btn = document.getElementById("go"); btn.disabled = true;
+    try {
+      out.innerHTML = msg(`<span class="spin"></span>Lade Songs …`);
+      const tracks = await loadTracks(id, (n, total) => { out.innerHTML = msg(`<span class="spin"></span>Lade Songs … ${n}${total ? " / " + total : ""}`); });
+      if (!tracks.length) { out.innerHTML = msg("Keine abspielbaren Songs gefunden.", "err"); btn.disabled = false; return; }
+      const shuffled = fairShuffle(tracks, id, opts);
+      out.innerHTML = msg(`<span class="spin"></span>Speichere ${shuffled.length} Songs in Spotify …`);
+      const targetId = await saveShuffled(id, name, shuffled);
+      out.innerHTML = `
+        ${msg(`✅ ${shuffled.length} Songs fair gemischt und gespeichert.<br>Wichtig: In Spotify <b>Shuffle AUS</b> lassen, sonst mischt Spotify wieder auf seine Art.`, "ok")}
+        <button id="play">▶︎ Jetzt abspielen</button>
+        <a class="btn sec" href="https://open.spotify.com/playlist/${esc(targetId)}" target="_blank" rel="noopener">In Spotify öffnen</a>
+        <div class="card"><b>Die ersten Songs:</b>
+          <ol class="prev">${shuffled.slice(0, 15).map(t => `<li>${esc(t.name)} <span>– ${esc(artistOf(t))}</span></li>`).join("")}</ol>
+        </div>`;
+      document.getElementById("play").onclick = async () => {
+        try { await playNow(targetId); out.insertAdjacentHTML("afterbegin", msg("▶︎ Läuft!", "ok")); }
+        catch(e) {
+          const hint = e.status === 404 ? "Kein aktives Gerät gefunden – öffne kurz die Spotify-App, starte irgendeinen Song und versuch es nochmal."
+                     : e.status === 403 ? "Spotify erlaubt das direkte Abspielen hier nicht (Premium nötig oder für Entwickler-Apps gesperrt). Nutze „In Spotify öffnen“."
+                     : e.message;
+          out.insertAdjacentHTML("afterbegin", msg(esc(hint), "err"));
+        }
+      };
+    } catch(e) {
+      out.innerHTML = msg(esc(friendly(e)), "err");
+    }
+    btn.disabled = false;
+  };
+}
+
+function viewSettings(){
+  app.innerHTML = `
+    <button class="sec" id="back">← Zurück</button>
+    <h2>Einstellungen</h2>
+    <div class="card">
+      <p>Client ID: <code>${esc(store.get("clientId") || "–")}</code></p>
+      <p>Redirect URI: <code>${esc(REDIRECT_URI)}</code></p>
+      <button class="sec" id="chg">Client ID ändern</button>
+      <button class="sec" id="rst">Gemerkte „Zuletzt gehört“-Listen löschen</button>
+      <button class="sec" id="out">Ausloggen</button>
+    </div>`;
+  document.getElementById("back").onclick = render;
+  document.getElementById("chg").onclick = () => { store.del("token"); viewSetup(); };
+  document.getElementById("rst").onclick = () => {
+    Object.keys(localStorage).filter(k => k.startsWith("fs_recent_")).forEach(k => localStorage.removeItem(k));
+    alertMsg("Zurückgesetzt.");
+  };
+  document.getElementById("out").onclick = logout;
+}
+function alertMsg(t){ app.insertAdjacentHTML("afterbegin", msg(esc(t), "ok")); }
+
+function friendly(e){
+  if (e.status === 403) return "Spotify verweigert den Zugriff (403). Prüfe: Bist du im Spotify-Dashboard bei „User Management“ eingetragen und hat der App-Besitzer Premium? Details: " + e.message;
+  return e.message || String(e);
+}
+function showError(e){
+  if (e && e.status === 401) { logout(); return; }
+  if (!store.get("token")) { viewLogin(friendly(e)); return; }
+  app.innerHTML = msg(esc(friendly(e)), "err") + `<button class="sec" id="retry">Nochmal versuchen</button><button class="sec" id="lo">Ausloggen</button>`;
+  document.getElementById("retry").onclick = render;
+  document.getElementById("lo").onclick = logout;
+}
+
+function render(){
+  if (!store.get("clientId")) return viewSetup();
+  if (!store.get("token")) return viewLogin();
+  viewPlaylists().catch(showError);
+}
+
+document.getElementById("btnSettings").onclick = viewSettings;
+
+(async () => {
+  try { await handleRedirect(); }
+  catch(e) { store.del("token"); viewLogin(e.message); return; }
+  render();
+})();
+</script>
+</body>
+</html>
