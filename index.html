@@ -33,7 +33,7 @@
   button.sec,.btn.sec{background:var(--card2);color:var(--text)}
   button.small{display:inline-block;width:auto;padding:8px 14px;font-size:14px;margin:0}
   button:disabled{opacity:.5}
-  input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid #333;background:var(--card2);color:var(--text);font-size:15px}
+  input[type=text],input[type=search]{width:100%;padding:12px;border-radius:10px;border:1px solid #333;background:var(--card2);color:var(--text);font-size:15px}
   label.opt{display:flex;gap:10px;align-items:flex-start;padding:10px 0;color:var(--text)}
   label.opt input{width:20px;height:20px;margin-top:2px;accent-color:var(--accent);flex:none}
   label.opt small{display:block;color:var(--muted)}
@@ -295,6 +295,8 @@ async function viewPlaylists(){
 
   app.innerHTML = `
     <p>Hallo ${esc(me.display_name || me.id)}! Wähle, was gemischt werden soll:</p>
+    <input type="search" id="search" placeholder="🔍 Playlist suchen …" autocomplete="off" style="margin:6px 0 4px">
+    <p id="noHits" class="hidden">Keine Playlist gefunden.</p>
     <div class="card pl" data-id="liked" data-name="Lieblingssongs">
       <div class="ph">💚</div><div class="grow"><div class="t">Lieblingssongs</div><div class="s">Deine gespeicherten Songs</div></div>
     </div>
@@ -306,6 +308,18 @@ async function viewPlaylists(){
     ${others.length ? `<p style="margin-top:18px">${others.length} gefolgte Playlist(s) von anderen werden nicht angezeigt – Spotify erlaubt Apps wie dieser nur Zugriff auf eigene Playlists. Tipp: In Spotify die Playlist kopieren („Zu anderer Playlist hinzufügen“ → neue Playlist), dann taucht sie hier auf.</p>` : ""}
   `;
   app.querySelectorAll(".pl").forEach(el => el.onclick = () => viewShuffle(el.dataset.id, el.dataset.name));
+  const search = document.getElementById("search");
+  const norm = t => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  search.oninput = () => {
+    const q = norm(search.value.trim());
+    let hits = 0;
+    app.querySelectorAll(".pl").forEach(el => {
+      const show = !q || norm(el.dataset.name).includes(q);
+      el.classList.toggle("hidden", !show);
+      if (show) hits++;
+    });
+    document.getElementById("noHits").classList.toggle("hidden", hits > 0);
+  };
 }
 
 function viewShuffle(id, name){
