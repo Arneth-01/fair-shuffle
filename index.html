@@ -96,7 +96,29 @@ const artistOf = t => (t.artists && t.artists[0] && t.artists[0].name) || (t.sho
 
 /* Fairer Shuffle: komplette Zufalls-Permutation (Fisher-Yates).
    Jeder Song kommt genau einmal vor, jeder hat auf jedem Platz dieselbe Wahrscheinlichkeit. */
-const fairShuffle = tracks => fisherYates(tracks);
+// Optional: zwei Songs vom selben Künstler nicht direkt hintereinander (wo möglich)
+function spreadArtists(a){
+  const same = (x, y) => x && y && artistOf(x) && artistOf(x) === artistOf(y);
+  const okAt = (pos, t, skip) => // passt Song t an Position pos (Nachbarn prüfen, skip = Tauschpartner ignorieren)
+    !(pos > 0 && pos - 1 !== skip && same(a[pos - 1], t)) && !(pos < a.length - 1 && pos + 1 !== skip && same(a[pos + 1], t));
+  for (let pass = 0; pass < 3; pass++) {
+    let fixed = true;
+    for (let i = 1; i < a.length; i++) {
+      if (!same(a[i], a[i - 1])) continue;
+      fixed = false;
+      // zuerst weiter hinten suchen, dann weiter vorne
+      const order = [];
+      for (let j = i + 1; j < a.length; j++) order.push(j);
+      for (let j = 0; j < i - 1; j++) order.push(j);
+      for (const j of order) {
+        if (okAt(i, a[j], j) && okAt(j, a[i], i)) { [a[i], a[j]] = [a[j], a[i]]; break; }
+      }
+    }
+    if (fixed) break;
+  }
+  return a;
+}
+const fairShuffle = (tracks, spread) => spread ? spreadArtists(fisherYates(tracks)) : fisherYates(tracks);
 
 /* ================== Login (PKCE, kein Server nötig) ================== */
 function randomString(len){
@@ -291,17 +313,23 @@ function viewShuffle(id, name){
     <button class="sec" id="back">← Zurück</button>
     <h2>${esc(name)}</h2>
     <p>Jeder Song kommt genau einmal, in komplett zufälliger Reihenfolge.</p>
+    <div class="card">
+      <label class="opt"><input type="checkbox" id="oSpread" ${store.get("spread_" + id, false) ? "checked" : ""}>
+        <span>Gleiche Künstler nicht hintereinander<small>Zwei Songs vom selben Künstler kommen nicht direkt nacheinander (soweit möglich).</small></span></label>
+    </div>
     <button id="go">Mischen & speichern</button>
     <div id="out"></div>`;
   document.getElementById("back").onclick = () => viewPlaylists().catch(showError);
   document.getElementById("go").onclick = async () => {
+    const spread = document.getElementById("oSpread").checked;
+    store.set("spread_" + id, spread);
     const out = document.getElementById("out");
     const btn = document.getElementById("go"); btn.disabled = true;
     try {
       out.innerHTML = msg(`<span class="spin"></span>Lade Songs …`);
       const tracks = await loadTracks(id, (n, total) => { out.innerHTML = msg(`<span class="spin"></span>Lade Songs … ${n}${total ? " / " + total : ""}`); });
       if (!tracks.length) { out.innerHTML = msg("Keine abspielbaren Songs gefunden.", "err"); btn.disabled = false; return; }
-      const shuffled = fairShuffle(tracks);
+      const shuffled = fairShuffle(tracks, spread);
       out.innerHTML = msg(`<span class="spin"></span>Speichere ${shuffled.length} Songs in Spotify …`);
       const targetId = await saveShuffled(id, name, shuffled);
       out.innerHTML = `
