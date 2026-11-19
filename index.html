@@ -92,38 +92,9 @@ function fisherYates(arr){
 }
 const artistOf = t => (t.artists && t.artists[0] && t.artists[0].name) || (t.show && t.show.name) || "";
 
-// Verhindert, dass zwei Songs vom selben Künstler direkt hintereinander kommen (wo möglich)
-function spreadArtists(a){
-  for (let i = 1; i < a.length; i++) {
-    if (artistOf(a[i]) && artistOf(a[i]) === artistOf(a[i-1])) {
-      for (let j = i + 1; j < a.length; j++) {
-        if (artistOf(a[j]) !== artistOf(a[i-1])) { [a[i], a[j]] = [a[j], a[i]]; break; }
-      }
-    }
-  }
-  return a;
-}
-
-/* Fairer Shuffle:
-   1) Jeder Song genau einmal (komplette Permutation, Fisher-Yates)
-   2) Songs, die beim letzten Mal ganz vorne lagen (also wahrscheinlich gehört wurden), kommen nach hinten
-   3) Gleiche Künstler werden auseinandergezogen */
-function fairShuffle(tracks, sourceId, opts){
-  const recent = new Set(opts.pushRecent ? store.get("recent_" + sourceId, []) : []);
-  let fresh = tracks.filter(t => !recent.has(t.id));
-  let old   = tracks.filter(t =>  recent.has(t.id));
-  fresh = fisherYates(fresh);
-  old   = fisherYates(old);
-  if (opts.spread) { spreadArtists(fresh); spreadArtists(old); }
-  const result = fresh.concat(old);
-  if (opts.spread && fresh.length && old.length && artistOf(fresh[fresh.length-1]) === artistOf(old[0])) {
-    spreadArtists(result); // Übergang zwischen den beiden Teilen glätten
-  }
-  // Merken, was diesmal vorne liegt (erstes Viertel, max. 40 Songs)
-  const n = Math.min(40, Math.max(1, Math.ceil(result.length / 4)));
-  store.set("recent_" + sourceId, result.slice(0, n).map(t => t.id));
-  return result;
-}
+/* Fairer Shuffle: komplette Zufalls-Permutation (Fisher-Yates).
+   Jeder Song kommt genau einmal vor, jeder hat auf jedem Platz dieselbe Wahrscheinlichkeit. */
+const fairShuffle = tracks => fisherYates(tracks);
 
 /* ================== Login (PKCE, kein Server nötig) ================== */
 function randomString(len){
@@ -283,7 +254,7 @@ function viewLogin(error = ""){
   document.getElementById("btnSettings").classList.remove("hidden");
   app.innerHTML = `
     ${error ? msg(esc(error), "err") : ""}
-    <p>Mischt deine Playlists wirklich fair: jeder Song genau einmal, keine Lieblings-Bevorzugung, gleiche Künstler nicht direkt hintereinander.</p>
+    <p>Mischt deine Playlists wirklich fair: jeder Song genau einmal, jeder mit derselben Wahrscheinlichkeit.</p>
     <button id="btnLogin">Mit Spotify einloggen</button>`;
   document.getElementById("btnLogin").onclick = login;
 }
@@ -314,33 +285,25 @@ async function viewPlaylists(){
 }
 
 function viewShuffle(id, name){
-  const o = store.get("opts", { spread: true, pushRecent: true });
   app.innerHTML = `
     <button class="sec" id="back">← Zurück</button>
     <h2>${esc(name)}</h2>
-    <div class="card">
-      <label class="opt"><input type="checkbox" id="oSpread" ${o.spread ? "checked" : ""}>
-        <span>Künstler verteilen<small>Zwei Songs vom selben Künstler kommen nicht direkt hintereinander.</small></span></label>
-      <label class="opt"><input type="checkbox" id="oRecent" ${o.pushRecent ? "checked" : ""}>
-        <span>Zuletzt Gehörtes nach hinten<small>Songs, die beim letzten Mischen ganz vorne waren, landen diesmal hinten.</small></span></label>
-    </div>
+    <p>Jeder Song kommt genau einmal, in komplett zufälliger Reihenfolge.</p>
     <button id="go">Mischen & speichern</button>
     <div id="out"></div>`;
   document.getElementById("back").onclick = () => viewPlaylists().catch(showError);
   document.getElementById("go").onclick = async () => {
-    const opts = { spread: document.getElementById("oSpread").checked, pushRecent: document.getElementById("oRecent").checked };
-    store.set("opts", opts);
     const out = document.getElementById("out");
     const btn = document.getElementById("go"); btn.disabled = true;
     try {
       out.innerHTML = msg(`<span class="spin"></span>Lade Songs …`);
       const tracks = await loadTracks(id, (n, total) => { out.innerHTML = msg(`<span class="spin"></span>Lade Songs … ${n}${total ? " / " + total : ""}`); });
       if (!tracks.length) { out.innerHTML = msg("Keine abspielbaren Songs gefunden.", "err"); btn.disabled = false; return; }
-      const shuffled = fairShuffle(tracks, id, opts);
+      const shuffled = fairShuffle(tracks);
       out.innerHTML = msg(`<span class="spin"></span>Speichere ${shuffled.length} Songs in Spotify …`);
       const targetId = await saveShuffled(id, name, shuffled);
       out.innerHTML = `
-        ${msg(`✅ ${shuffled.length} Songs fair gemischt und gespeichert.<br>Wichtig: In Spotify <b>Shuffle AUS</b> lassen, sonst mischt Spotify wieder auf seine Art.`, "ok")}
+        ${msg(`✅ ${shuffled.length} Songs fair gemischt und gespeichert.<br>Wichtig: In Spotify <b>Shuffle AUS</b> und <b>Wiederholen AUS</b> lassen.`, "ok")}
         <button id="play">▶︎ Jetzt abspielen</button>
         <a class="btn sec" href="https://open.spotify.com/playlist/${esc(targetId)}" target="_blank" rel="noopener">In Spotify öffnen</a>
         <div class="card"><b>Die ersten Songs:</b>
@@ -370,15 +333,10 @@ function viewSettings(){
       <p>Client ID: <code>${esc(store.get("clientId") || "–")}</code></p>
       <p>Redirect URI: <code>${esc(REDIRECT_URI)}</code></p>
       <button class="sec" id="chg">Client ID ändern</button>
-      <button class="sec" id="rst">Gemerkte „Zuletzt gehört“-Listen löschen</button>
       <button class="sec" id="out">Ausloggen</button>
     </div>`;
   document.getElementById("back").onclick = render;
   document.getElementById("chg").onclick = () => { store.del("token"); viewSetup(); };
-  document.getElementById("rst").onclick = () => {
-    Object.keys(localStorage).filter(k => k.startsWith("fs_recent_")).forEach(k => localStorage.removeItem(k));
-    alertMsg("Zurückgesetzt.");
-  };
   document.getElementById("out").onclick = logout;
 }
 function alertMsg(t){ app.insertAdjacentHTML("afterbegin", msg(esc(t), "ok")); }
