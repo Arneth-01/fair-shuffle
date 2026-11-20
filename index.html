@@ -67,7 +67,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 25</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 26</p>
 
 <script>
 "use strict";
@@ -78,7 +78,7 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 25;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 26;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -626,6 +626,7 @@ function viewSetup(error = ""){
   document.getElementById("saveCid").onclick = () => {
     const v = document.getElementById("cid").value.trim();
     if (!/^[a-f0-9]{32}$/i.test(v)) { viewSetup("Das sieht nicht nach einer Client ID aus (32 Zeichen, 0–9 und a–f)."); return; }
+    if (store.get("clientId") !== v) { store.del("blockedUntil"); store.del("blockCount"); }   // Sperre gehört zur alten Client ID
     store.set("clientId", v); login();
   };
 }
@@ -1051,7 +1052,7 @@ function handleInvite(){
   if (!cid) return false;
   history.replaceState(null, "", REDIRECT_URI);
   if (!/^[a-f0-9]{32}$/i.test(cid)) return false;
-  if (store.get("clientId") !== cid) { store.set("clientId", cid); store.del("token"); }
+  if (store.get("clientId") !== cid) { store.set("clientId", cid); store.del("token"); store.del("blockedUntil"); store.del("blockCount"); }
   return !store.get("token");
 }
 const inviteLink = () => REDIRECT_URI + "?cid=" + encodeURIComponent(store.get("clientId") || "");
