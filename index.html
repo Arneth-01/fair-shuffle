@@ -66,7 +66,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 13</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 14</p>
 
 <script>
 "use strict";
@@ -371,8 +371,10 @@ async function runMix(sourceId, sourceName, status){
   status(`Speichere ${shuffled.length} Songs in Spotify …`);
   const targetId = await saveShuffled(sourceId, sourceName, shuffled);
   store.set("order_" + targetId, shuffled.map(t => t.uri));
+  store.set("names_" + targetId, shuffled.map(t => [t.name || "", artistOf(t)]));
   store.del("pos_" + targetId);
-  store.set("mixedAt_" + targetId, Date.now());   // alles, was davor gehört wurde, gehört zur alten Runde
+  store.set("mixedAt_" + targetId, Date.now());
+  store.del("lastSong_" + targetId);   // alles, was davor gehört wurde, gehört zur alten Runde
   const recent = getRecent().filter(r => r.id !== sourceId);
   recent.unshift({ id: sourceId, name: sourceName });
   store.set("recent", recent.slice(0, 3));
@@ -392,49 +394,55 @@ async function playerState(){
 }
 async function getOrder(targetId){
   let order = store.get("order_" + targetId);
-  if (!order) {
-    order = (await loadOne(targetId)).map(t => t.uri);
+  if (!order || !store.get("names_" + targetId)) {
+    const list = await loadOne(targetId);
+    order = list.map(t => t.uri);
     store.set("order_" + targetId, order);
+    store.set("names_" + targetId, list.map(t => [t.name || "", artistOf(t)]));
   }
   return order;
 }
 // Wo steht man in der Runde? -> { index (0-basiert), total, playing }
 async function getProgress(targetId){
   const order = await getOrder(targetId);
+  const names = store.get("names_" + targetId, []);
   const ctx = "spotify:playlist:" + targetId;
+  const mixedAt = store.get("mixedAt_" + targetId, 0);
   const st = await playerState();
-  const info = t => t ? { name: t.name || "", artist: artistOf(t) } : null;
-  if (st && st.context && st.context.uri === ctx && st.item) {
-    const idx = order.indexOf(st.item.uri);
-    if (idx >= 0) {
-      const song = info(st.item);
-      store.set("pos_" + targetId, { uri: st.item.uri, ms: st.progress_ms || 0, song });
-      return { index: idx, total: order.length, playing: !!st.is_playing, state: st, song };
-    }
-  }
+
+  // 1) Zuletzt FERTIG gehörter Song dieser Runde (laut Spotify "Zuletzt gehört")
+  let lastHit = null;
   try {
     const rp = await api("/me/player/recently-played?limit=50");
-    const mixedAt = store.get("mixedAt_" + targetId, 0);
-    const hit = (rp.items || []).find(i => i.context && i.context.uri === ctx && i.track &&
-                                            (!mixedAt || Date.parse(i.played_at) > mixedAt));
-    if (hit) {
-      const idx = order.indexOf(hit.track.uri);
-      if (idx >= 0) {
-        const saved = store.get("pos_" + targetId);
-        const savedIdx = saved ? order.indexOf(saved.uri) : -1;
-        if (savedIdx < idx + 1) {   // zuletzt fertig gehörter Song -> beim nächsten weitermachen
-          const nextUri = order[Math.min(idx + 1, order.length - 1)];
-          store.set("pos_" + targetId, { uri: nextUri, ms: 0, finished: idx + 1 >= order.length, song: info(hit.track) });
-        }
+    lastHit = (rp.items || []).find(i => i.context && i.context.uri === ctx && i.track &&
+                                         (!mixedAt || Date.parse(i.played_at) > mixedAt)) || null;
+  } catch(e) {}
+  if (lastHit) store.set("lastSong_" + targetId, { name: lastHit.track.name || "", artist: artistOf(lastHit.track), uri: lastHit.track.uri });
+
+  // 2) Wo steht man gerade?
+  let index = -1, playing = false, finished = false;
+  if (st && st.context && st.context.uri === ctx && st.item && order.indexOf(st.item.uri) >= 0) {
+    index = order.indexOf(st.item.uri);
+    playing = !!st.is_playing;
+    store.set("pos_" + targetId, { uri: st.item.uri, ms: st.progress_ms || 0 });
+  } else {
+    if (lastHit) {
+      const idx = order.indexOf(lastHit.track.uri);
+      const saved = store.get("pos_" + targetId);
+      const savedIdx = saved ? order.indexOf(saved.uri) : -1;
+      if (idx >= 0 && savedIdx < idx + 1) {   // beim Song nach dem zuletzt gehörten weitermachen
+        store.set("pos_" + targetId, { uri: order[Math.min(idx + 1, order.length - 1)], ms: 0, finished: idx + 1 >= order.length });
       }
     }
-  } catch(e) {}
-  const saved = store.get("pos_" + targetId);
-  if (saved) {
-    const idx = order.indexOf(saved.uri);
-    if (idx >= 0) return { index: idx, total: order.length, playing: false, finished: !!saved.finished, state: st, song: saved.song };
+    const saved = store.get("pos_" + targetId);
+    if (saved && order.indexOf(saved.uri) >= 0) { index = order.indexOf(saved.uri); finished = !!saved.finished; }
   }
-  return { index: -1, total: order.length, playing: false, state: st };
+
+  // 3) Zuletzt gespielter Song: von Spotify, sonst der Song vor der aktuellen Stelle
+  let song = store.get("lastSong_" + targetId);
+  if (!song && index > 0 && names[index - 1]) song = { name: names[index - 1][0], artist: names[index - 1][1] };
+  if (finished && index >= 0 && names[index]) song = song || { name: names[index][0], artist: names[index][1] };
+  return { index, total: order.length, playing, finished, state: st, song };
 }
 async function playFrom(targetId, uri, ms){
   const body = { context_uri: "spotify:playlist:" + targetId };
@@ -626,7 +634,7 @@ function setupQuick(box, r){
     prog.innerHTML = `
       <p>${p.playing ? "▶ Läuft gerade: Song" : p.state && p.state.item && p.state.context && p.state.context.uri === "spotify:playlist:" + r.target ? "⏸ Pausiert bei Song" : "Weiter bei Song"} <b style="color:var(--text)">${nr}</b> von ${p.total}</p>
       <div class="bar"><div style="width:${Math.round(nr / p.total * 100)}%"></div></div>
-      ${p.song && p.song.name ? `<p>🎵 ${p.playing ? "Jetzt" : "Zuletzt gehört"}: <b style="color:var(--text)">${esc(p.song.name)}</b>${p.song.artist ? " – " + esc(p.song.artist) : ""}</p>` : ""}
+      ${p.song && p.song.name ? `<p>🎵 Zuletzt gespielt: <b style="color:var(--text)">${esc(p.song.name)}</b>${p.song.artist ? " – " + esc(p.song.artist) : ""}</p>` : ""}
       ${done ? `<p style="color:var(--accent)">Runde fertig – Zeit für eine neue Runde!</p>` : ""}`;
   }).catch(() => { prog.innerHTML = `<p>Fortschritt gerade nicht abrufbar.</p>`; });
 
