@@ -67,7 +67,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 24</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 25</p>
 
 <script>
 "use strict";
@@ -78,7 +78,7 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 24;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 25;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -244,7 +244,7 @@ async function accessToken(){
   await tokenRequest({ grant_type: "refresh_token", refresh_token: t.refresh, client_id: store.get("clientId") });
   return store.get("token").access;
 }
-function logout(){ store.del("token"); me = null; playlistCache = null; trackCache.clear(); render(); }
+function logout(){ store.del("token"); store.del("me"); store.del("plCache"); me = null; playlistCache = null; trackCache.clear(); render(); }
 
 /* ================== Spotify-API ================== */
 // Spotify-Anfrage – mit Schutz gegen Endlos-Warten:
@@ -317,10 +317,27 @@ async function getAll(path, onProgress){
   }
   return out;
 }
-async function ensureMe(){ if (!me) me = await api("/me"); return me; }
+// Profil nur einmal holen und auf dem Gerät merken
+async function ensureMe(){
+  if (!me) me = store.get("me");
+  if (!me) { const m = await api("/me"); me = { id: m.id, display_name: m.display_name }; store.set("me", me); }
+  return me;
+}
+// Playlist-Liste auf dem Gerät merken und höchstens einmal pro Minute neu bei Spotify holen
+const slimPl = p => ({ id: p.id, name: p.name, owner: { id: p.owner && p.owner.id }, collaborative: !!p.collaborative,
+                      total: ((p.items || p.tracks || {}).total ?? p.total ?? null),
+                      img: p.img || (p.images && p.images.length ? p.images[p.images.length - 1].url : null) });
 async function getPlaylists(force){
-  if (!playlistCache || force) playlistCache = await getAll("/me/playlists?limit=50");
-  return playlistCache;
+  const c = store.get("plCache");
+  if (!force && c && Date.now() - c.t < 60000) return (playlistCache = c.items);
+  try {
+    const items = (await getAll("/me/playlists?limit=50")).filter(Boolean).map(slimPl);
+    store.set("plCache", { t: Date.now(), items });
+    return (playlistCache = items);
+  } catch(e) {
+    if (c) { e.cachedItems = c.items; }   // Spotify bremst/offline -> gemerkte Liste trotzdem zeigen
+    throw e;
+  }
 }
 // Lädt eine Playlist und zählt mit, was nicht abspielbar ist
 async function loadOne(id, onProgress, stats){
@@ -382,7 +399,7 @@ async function saveShuffled(sourceId, sourceName, tracks){
     })});
     targetId = pl.id;
     await api("/playlists/" + targetId + "/items", { method: "PUT", body: JSON.stringify({ uris: uris.slice(0, 100) }) });
-    playlistCache = null;
+    playlistCache = null; store.del("plCache");
   }
   map[sourceId] = targetId; store.set("targets", map);
   for (let i = 100; i < uris.length; i += 100) {
@@ -454,15 +471,13 @@ function clearShortCache(){ for (const k in shortCache) delete shortCache[k]; }
 async function playerState(){
   try { return await cached("player", 2500, () => api("/me/player?market=from_token")); } catch(e) { return null; }
 }
-async function getOrder(targetId){
-  let order = store.get("order_" + targetId);
-  if (!order || !store.get("names_" + targetId)) {
-    const list = await loadOne(targetId);
-    order = list.map(t => t.uri);
-    store.set("order_" + targetId, order);
-    store.set("names_" + targetId, list.map(t => [t.name || "", artistOf(t)]));
-  }
-  return order;
+// Gemischte Reihenfolge: nur vom Gerät. Wird NICHT mehr automatisch von Spotify nachgeladen
+// (bei 2000 Songs wären das 40+ Anfragen bei jedem Öffnen). Nachladen nur auf ausdrücklichen Knopfdruck.
+function getOrder(targetId){ return store.get("order_" + targetId); }
+async function downloadOrder(targetId){
+  const list = await loadOne(targetId);
+  store.set("order_" + targetId, list.map(t => t.uri));
+  store.set("names_" + targetId, list.map(t => [t.name || "", artistOf(t)]));
 }
 // Wo steht man in der Runde? -> { index (0-basiert), total, playing }
 // Findet einen Song in der gemischten Reihenfolge – auch wenn Spotify eine andere Fassung abspielt
@@ -481,7 +496,8 @@ function locate(order, names, t){
 }
 
 async function getProgress(targetId){
-  const order = await getOrder(targetId);
+  const order = getOrder(targetId);
+  if (!order) return { index: -1, total: 0, noOrder: true };
   const names = store.get("names_" + targetId, []);
   const ctx = "spotify:playlist:" + targetId;
   const mixedAt = store.get("mixedAt_" + targetId, 0);
@@ -630,30 +646,39 @@ const selected = new Map();   // id -> name
 
 let liveUpdaters = [];
 let currentView = "";
+let forceList = false;
 async function viewHome(){
   currentView = "home"; liveUpdaters = [];
   document.getElementById("btnSettings").classList.remove("hidden");
-  loading("Lade deine Playlists …");
+  if (!store.get("plCache")) loading("Lade deine Playlists …");
   await ensureMe();
-  trackCache.clear(); statsCache.clear();      // immer aktuelle Daten, falls Playlists in Spotify geändert wurden
-  const all = await getPlaylists(true);
+  trackCache.clear(); statsCache.clear();      // Songs beim nächsten Mischen frisch holen
+  let all, slowNote = "";
+  try { all = await getPlaylists(forceList); }
+  catch(e) {
+    if (!e.cachedItems) throw e;
+    all = e.cachedItems;
+    slowNote = msg(esc(friendly(e)) + "<br>Unten siehst du deine zuletzt geladene Liste.", "err");
+  }
+  forceList = false;
   const targets = new Set(Object.values(store.get("targets", {})));
   const isShuffleList = p => targets.has(p.id) || /\(Fair Shuffle\)\s*$/i.test(p.name || "");
   const own = p => p.owner && p.owner.id === me.id || p.collaborative;
   const mine = all.filter(p => p && own(p) && !isShuffleList(p));
   const others = all.filter(p => p && !own(p));
-  const count = p => ((p.items || p.tracks || {}).total ?? "?");
+  const count = p => (p.total ?? "?");
   const tmap = store.get("targets", {});
   const recent = multiMode ? [] : getRecent().map(r => ({ ...r, target: tmap[r.id] })).filter(r => r.target);
 
   const card = (id, name, sub, img) => `
     <div class="card pl ${selected.has(id) ? "sel" : ""}" data-id="${esc(id)}" data-name="${esc(name)}">
       ${multiMode ? `<div class="chk">${selected.has(id) ? "✓" : ""}</div>` : ""}
-      ${img ? `<img src="${esc(img)}" alt="">` : `<div class="ph">${id === "liked" ? "💚" : "🎵"}</div>`}
+      ${img ? `<img src="${esc(img)}" alt="" loading="lazy">` : `<div class="ph">${id === "liked" ? "💚" : "🎵"}</div>`}
       <div class="grow"><div class="t">${esc(name)}</div><div class="s">${esc(sub)}</div></div>
     </div>`;
 
   app.innerHTML = `
+    ${slowNote}
     ${store.get("scopeVer") !== SCOPE_VER ? `
       <div class="msg">Damit „Song x von y“ auch nach dem Schließen von Spotify stimmt, braucht die App eine zusätzliche Erlaubnis. Alles andere funktioniert auch so.
         <button class="small" id="btnRelogin" style="margin-top:8px">Einmal neu verbinden</button></div>` : ""}
@@ -670,12 +695,13 @@ async function viewHome(){
       </div>`).join("")}
     <div class="row" style="align-items:center">
       <p style="flex:2">${multiMode ? "Tippe die Playlists an, die zusammen gemischt werden sollen:" : `Hallo ${esc(me.display_name || me.id)}! Was soll gemischt werden?`}</p>
+      <button class="small sec" id="btnReload" style="flex:none" title="Playlists neu laden">↻</button>
       <button class="small sec" id="btnMulti" style="flex:none">${multiMode ? "✕ Abbrechen" : "☑ Mehrere"}</button>
     </div>
     <input type="search" id="search" placeholder="🔍 Playlist suchen …" autocomplete="off" style="margin:6px 0 4px">
     <p id="noHits" class="hidden">Keine Playlist gefunden.</p>
     ${card("liked", "Lieblingssongs", "Deine gespeicherten Songs")}
-    ${mine.map(p => card(p.id, p.name, count(p) + " Titel", p.images && p.images[0] && p.images[p.images.length - 1].url)).join("")}
+    ${mine.map(p => card(p.id, p.name, count(p) + " Titel", p.img)).join("")}
     ${others.length ? `<p style="margin-top:18px">${others.length} gefolgte Playlist(s) von anderen werden nicht angezeigt – Spotify erlaubt Apps wie dieser nur Zugriff auf eigene Playlists. Tipp: In Spotify die Playlist kopieren, dann taucht sie hier auf.</p>` : ""}
     ${multiMode ? `<button class="sticky" id="btnMixSel" ${selected.size < 2 ? "disabled" : ""}>Ausgewählte zusammen mischen (${selected.size})</button>` : ""}
   `;
@@ -694,6 +720,7 @@ async function viewHome(){
     b.textContent = `Ausgewählte zusammen mischen (${selected.size})`;
     b.disabled = selected.size < 2;
   });
+  document.getElementById("btnReload").onclick = () => { forceList = true; viewHome().catch(showError); };
   document.getElementById("btnMulti").onclick = () => { multiMode = !multiMode; selected.clear(); viewHome().catch(showError); };
   const mixSel = document.getElementById("btnMixSel");
   if (mixSel) mixSel.onclick = () => {
@@ -730,6 +757,16 @@ function setupQuick(box, r){
   let busy = false;
   const refresh = () => busy ? Promise.resolve() : getProgress(r.target).then(p => {
     if (busy) return;
+    if (p.noOrder) {
+      prog.innerHTML = `<p>Fortschritt auf diesem Gerät noch unbekannt (z. B. auf einem anderen Gerät gemischt).</p>
+        <button class="small sec dl">Fortschritt laden</button>`;
+      prog.querySelector(".dl").onclick = async e => {
+        e.target.disabled = true; e.target.textContent = "Lade …";
+        try { await downloadOrder(r.target); refresh(); }
+        catch(err) { prog.innerHTML = msg(esc(friendly(err)), "err"); }
+      };
+      return;
+    }
     if (p.index < 0) { prog.innerHTML = `<p>${p.total} Songs · noch nicht angefangen</p>`; return; }
     const nr = p.index + 1, done = p.finished || nr >= p.total;
     prog.innerHTML = `
