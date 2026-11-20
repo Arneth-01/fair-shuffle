@@ -66,7 +66,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 14</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 15</p>
 
 <script>
 "use strict";
@@ -417,7 +417,12 @@ async function getProgress(targetId){
     lastHit = (rp.items || []).find(i => i.context && i.context.uri === ctx && i.track &&
                                          (!mixedAt || Date.parse(i.played_at) > mixedAt)) || null;
   } catch(e) {}
-  if (lastHit) store.set("lastSong_" + targetId, { name: lastHit.track.name || "", artist: artistOf(lastHit.track), uri: lastHit.track.uri });
+  // nur übernehmen, wenn das neuer ist als der zuletzt gemerkte Song
+  if (lastHit) {
+    const prev = store.get("lastSong_" + targetId);
+    const t = Date.parse(lastHit.played_at);
+    if (!prev || !prev.at || t > prev.at) store.set("lastSong_" + targetId, { name: lastHit.track.name || "", artist: artistOf(lastHit.track), uri: lastHit.track.uri, at: t });
+  }
 
   // 2) Wo steht man gerade?
   let index = -1, playing = false, finished = false;
@@ -425,6 +430,8 @@ async function getProgress(targetId){
     index = order.indexOf(st.item.uri);
     playing = !!st.is_playing;
     store.set("pos_" + targetId, { uri: st.item.uri, ms: st.progress_ms || 0 });
+    // Song, bei dem man gerade steht (der grüne in Spotify) = wo man aufgehört hat
+    store.set("lastSong_" + targetId, { name: st.item.name || "", artist: artistOf(st.item), uri: st.item.uri, at: Date.now() });
   } else {
     if (lastHit) {
       const idx = order.indexOf(lastHit.track.uri);
@@ -634,7 +641,7 @@ function setupQuick(box, r){
     prog.innerHTML = `
       <p>${p.playing ? "▶ Läuft gerade: Song" : p.state && p.state.item && p.state.context && p.state.context.uri === "spotify:playlist:" + r.target ? "⏸ Pausiert bei Song" : "Weiter bei Song"} <b style="color:var(--text)">${nr}</b> von ${p.total}</p>
       <div class="bar"><div style="width:${Math.round(nr / p.total * 100)}%"></div></div>
-      ${p.song && p.song.name ? `<p>🎵 Zuletzt gespielt: <b style="color:var(--text)">${esc(p.song.name)}</b>${p.song.artist ? " – " + esc(p.song.artist) : ""}</p>` : ""}
+      ${p.song && p.song.name ? `<p>🎵 Aufgehört bei: <b style="color:var(--text)">${esc(p.song.name)}</b>${p.song.artist ? " – " + esc(p.song.artist) : ""}</p>` : ""}
       ${done ? `<p style="color:var(--accent)">Runde fertig – Zeit für eine neue Runde!</p>` : ""}`;
   }).catch(() => { prog.innerHTML = `<p>Fortschritt gerade nicht abrufbar.</p>`; });
 
