@@ -67,7 +67,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 26</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 27</p>
 
 <script>
 "use strict";
@@ -78,7 +78,7 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 26;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 27;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -276,9 +276,10 @@ async function api(path, opts = {}, retry = true, tries = 0){
     return api(path, opts, false, tries);
   }
   if (r.status === 429) {
+    // Spotify gibt die Wartezeit im Browser meist nicht preis -> dann NICHT wiederholen (jeder Versuch verlängert die Sperre)
     const ra = parseInt(r.headers.get("Retry-After") || "0", 10);
-    const waitMs = (ra > 0 ? ra : 5) * 1000;
-    if (waitMs <= 10000 && tries < 3) {           // kurze Bremse -> kurz warten und nochmal
+    const waitMs = (ra > 0 ? ra : 60) * 1000;
+    if (ra > 0 && waitMs <= 10000 && tries < 2) {  // nur bei bekannter, kurzer Bremse kurz warten und nochmal
       await new Promise(res => setTimeout(res, waitMs + 500));
       return api(path, opts, retry, tries + 1);
     }
