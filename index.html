@@ -67,7 +67,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 27</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 28</p>
 
 <script>
 "use strict";
@@ -78,7 +78,10 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 27;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 28;
+// Wartungspause: bis zu diesem Zeitpunkt schickt die App KEINE Anfragen an Spotify (Spotify-Sperre ablaufen lassen)
+const PAUSE_UNTIL = Date.parse("2026-11-21T11:00:00Z");   // = Samstag 21.11.2026, 12:00 Uhr (Wien)
+const paused = () => Date.now() < PAUSE_UNTIL;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -253,6 +256,7 @@ function logout(){ store.del("token"); store.del("me"); store.del("plCache"); me
 //  - nach 20 s ohne Antwort abbrechen
 class RateLimitError extends Error {}
 async function api(path, opts = {}, retry = true, tries = 0){
+  if (paused()) { const e = new RateLimitError("paused"); e.status = 429; e.waitMs = PAUSE_UNTIL - Date.now(); throw e; }
   const until = store.get("blockedUntil", 0);
   if (Date.now() < until) {
     const e = new RateLimitError("blocked"); e.status = 429; e.waitMs = until - Date.now(); throw e;
@@ -965,7 +969,23 @@ function showError(e){
   document.getElementById("lo").onclick = logout;
 }
 
+function viewPause(){
+  currentView = "pause"; liveUpdaters = [];
+  document.getElementById("btnSettings").classList.add("hidden");
+  const t = new Date(PAUSE_UNTIL).toLocaleString("de-AT", { weekday: "long", day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+  app.innerHTML = `
+    <div class="card">
+      <h2 style="margin-top:0">⏸ Kurze Pause</h2>
+      <p>Spotify hat Fair Shuffle vorübergehend gesperrt. Damit die Sperre ablaufen kann, macht die App bis
+         <b style="color:var(--text)">${esc(t)} Uhr</b> Pause und fragt Spotify nichts an.</p>
+      <p>Danach geht es von selbst wieder. Deine Fair-Shuffle-Playlists kannst du in der Zwischenzeit ganz normal in Spotify abspielen
+         (Shuffle aus, Wiederholen aus).</p>
+    </div>`;
+}
+setInterval(() => { if (currentView === "pause" && !paused()) location.replace(REDIRECT_URI + "?v=" + APP_VERSION); }, 60000);
+
 function render(){
+  if (paused()) return viewPause();
   if (!store.get("clientId")) return viewSetup();
   if (!store.get("token")) return viewLogin();
   viewHome().catch(showError);
@@ -1061,6 +1081,7 @@ const inviteLink = () => REDIRECT_URI + "?cid=" + encodeURIComponent(store.get("
 (async () => {
   if (new URLSearchParams(location.search).has("v")) history.replaceState(null, "", REDIRECT_URI);
   if (handleInvite()) {
+    if (paused()) return viewPause();
     return viewLogin("", "Du wurdest zu Fair Shuffle eingeladen! 🎉 Tippe auf „Mit Spotify einloggen“. (Falls eine Fehlermeldung kommt: Die Person, die dich eingeladen hat, muss dich zuerst bei Spotify freischalten.)");
   }
   try { await handleRedirect(); }
