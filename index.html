@@ -67,7 +67,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 23</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 24</p>
 
 <script>
 "use strict";
@@ -78,7 +78,7 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 23;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 24;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -282,10 +282,15 @@ async function api(path, opts = {}, retry = true, tries = 0){
       await new Promise(res => setTimeout(res, waitMs + 500));
       return api(path, opts, retry, tries + 1);
     }
-    const block = Math.max(waitMs, 60000);       // längere Sperre -> merken und nichts mehr anfragen
+    // längere Sperre -> merken und nichts mehr anfragen. Spotify verrät die Dauer oft nicht,
+    // deshalb bei jeder erneuten Sperre doppelt so lange warten (1, 2, 4, 8, 16, max. 30 Min.)
+    const n = store.get("blockCount", 0);
+    const block = Math.max(waitMs, Math.min(30, Math.pow(2, n)) * 60000);
+    store.set("blockCount", n + 1);
     store.set("blockedUntil", Date.now() + block);
     const e = new RateLimitError("blocked"); e.status = 429; e.waitMs = block; throw e;
   }
+  if (store.get("blockCount", 0)) store.del("blockCount");   // Spotify antwortet wieder normal
   const text = await r.text();
   let data = null; try { data = text ? JSON.parse(text) : null; } catch(e) {}
   if (!r.ok) {
@@ -909,7 +914,7 @@ function viewSettings(){
 
 function friendly(e){
   if (e instanceof RateLimitError || e.status === 429)
-    return `Spotify bremst die App gerade, weil in kurzer Zeit zu viele Anfragen kamen. Das geht von selbst wieder weg – bitte in ${waitText(e.waitMs || 60000)} nochmal öffnen. (Bis dahin fragt die App absichtlich nichts an, damit die Sperre nicht länger wird.)`;
+    return `Spotify bremst die App gerade, weil in kurzer Zeit zu viele Anfragen kamen. Das geht von selbst wieder weg – bitte frühestens in ${waitText(e.waitMs || 60000)} nochmal öffnen und die App bis dahin am besten ganz schließen – auch auf anderen Geräten. (Die App fragt in der Zeit absichtlich nichts an, damit die Sperre nicht länger wird.)`;
   if (e.status === 403) return "Spotify verweigert den Zugriff (403). Prüfe: Bist du im Spotify-Dashboard bei „User Management“ eingetragen? Details: " + e.message;
   return e.message || String(e);
 }
