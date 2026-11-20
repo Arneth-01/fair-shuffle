@@ -67,7 +67,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 19</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 20</p>
 
 <script>
 "use strict";
@@ -78,7 +78,7 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 19;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 20;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -357,7 +357,7 @@ async function saveShuffled(sourceId, sourceName, tracks){
 }
 
 /* Mischen + speichern mit den gespeicherten Optionen der Quelle */
-async function runMix(sourceId, sourceName, status){
+async function runMix(sourceId, sourceName, status, autoRestart = true){
   const o = getOpts(sourceId);
   status("Lade Songs …");
   let tracks = await getTracks(sourceId, n => status("Lade Songs … " + n));
@@ -371,6 +371,11 @@ async function runMix(sourceId, sourceName, status){
   if (!tracks.length) throw new Error("Keine Songs übrig – sind alle Künstler ausgeschlossen?");
   const shuffled = fairShuffle(tracks, o.spread);
   status(`Speichere ${shuffled.length} Songs in Spotify …`);
+  // Läuft diese Shuffle-Playlist gerade in Spotify? (vor dem Speichern merken)
+  const knownTarget = store.get("targets", {})[sourceId];
+  delete shortCache.player;
+  const before_st = knownTarget && autoRestart ? await playerState() : null;
+  const wasActive = !!(before_st && before_st.context && before_st.context.uri === "spotify:playlist:" + knownTarget);
   const targetId = await saveShuffled(sourceId, sourceName, shuffled);
   store.set("order_" + targetId, shuffled.map(t => t.uri));
   store.set("names_" + targetId, shuffled.map(t => [t.name || "", artistOf(t)]));
@@ -380,7 +385,18 @@ async function runMix(sourceId, sourceName, status){
   const recent = getRecent().filter(r => r.id !== sourceId);
   recent.unshift({ id: sourceId, name: sourceName });
   store.set("recent", recent.slice(0, 3));
-  return { targetId, shuffled, dupes, excluded, stats: statsCache.get(sourceId) };
+
+  // Lief oder pausierte diese Playlist gerade -> neue Liste sofort ab Song 1 abspielen
+  let restarted = null;
+  if (wasActive && targetId === knownTarget) {
+    status("Starte die neue Liste ab Song 1 …");
+    try {
+      await playFrom(targetId);
+      restarted = "playing";
+    } catch(e) { restarted = "failed"; }
+    clearShortCache();
+  }
+  return { targetId, shuffled, dupes, excluded, stats: statsCache.get(sourceId), restarted };
 }
 
 // Die letzten 3 gemischten Playlists (neueste zuerst)
@@ -531,6 +547,8 @@ function statsText(st){
 }
 function resultHtml(r){
   const extra = [];
+  if (r.restarted === "playing") extra.push("🔁 Spotify spielt jetzt die neue Liste ab Song 1");
+  if (r.restarted === "failed") extra.push("⚠️ Konnte Spotify nicht automatisch auf Song 1 setzen – bitte in Spotify die Playlist neu starten");
   if (r.dupes) extra.push(`${r.dupes} doppelte Song(s) entfernt`);
   if (r.excluded) extra.push(`${r.excluded} Song(s) von ausgeschlossenen Künstlern weggelassen`);
   return msg(`✅ ${r.shuffled.length} Songs fair gemischt und gespeichert.<br>${esc(statsText(r.stats))}<br>${topArtists(r.shuffled)}` +
@@ -707,7 +725,7 @@ function setupQuick(box, r){
     busy = true;
     bNew.disabled = bRes.disabled = true;
     try {
-      const res = await runMix(r.id, r.name, t => qOut.innerHTML = spinMsg(t));
+      const res = await runMix(r.id, r.name, t => qOut.innerHTML = spinMsg(t), false);
       r.target = res.targetId;
       qOut.innerHTML = resultHtml(res);
       prog.innerHTML = `<p>Song <b style="color:var(--text)">1</b> von ${res.shuffled.length}</p><div class="bar"><div style="width:0%"></div></div>`;
