@@ -67,7 +67,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 21</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 22</p>
 
 <script>
 "use strict";
@@ -78,7 +78,7 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 21;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 22;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -929,17 +929,28 @@ window.addEventListener("focus", () => liveSoon(0));
 liveTimer = setTimeout(liveTick, 1500);
 
 // Neue App-Version auf GitHub? -> automatisch neu laden
-let updatePending = false;
+// Wichtig: GitHub liefert die normale Adresse bis zu 10 Min. aus dem Zwischenspeicher (alt).
+// Deshalb mit "?v=NEU" laden (umgeht den Zwischenspeicher) und pro Version nur EIN Versuch -> keine Neulade-Schleife.
+let updatePending = 0;
+function doUpdate(v){
+  let tried = {};
+  try { tried = JSON.parse(sessionStorage.getItem("fs_updTried") || "{}"); } catch(e) {}
+  if (tried[v]) return false;                       // für diese Version schon versucht -> nicht nochmal
+  tried[v] = 1;
+  try { sessionStorage.setItem("fs_updTried", JSON.stringify(tried)); } catch(e) {}
+  location.replace(REDIRECT_URI + "?v=" + v);
+  return true;
+}
 async function checkForUpdate(){
   try {
     const r = await fetch(REDIRECT_URI + "?vcheck=" + Date.now(), { cache: "no-store" });
     const m = (await r.text()).match(/const APP_VERSION = (\d+);/);
     if (m && +m[1] > APP_VERSION) {
-      updatePending = true;
-      if (document.visibilityState !== "visible" || currentView !== "shuffle") location.reload();
+      updatePending = +m[1];
+      if (document.visibilityState !== "visible" || currentView !== "shuffle") doUpdate(updatePending);
       else if (!document.getElementById("updBar")) {
         document.body.insertAdjacentHTML("afterbegin", `<div id="updBar" class="msg ok" style="max-width:560px;margin:10px auto;cursor:pointer">🔄 Neue Version verfügbar – tippen zum Aktualisieren</div>`);
-        document.getElementById("updBar").onclick = () => location.reload();
+        document.getElementById("updBar").onclick = () => location.replace(REDIRECT_URI + "?v=" + updatePending);
       }
     }
   } catch(e) {}
@@ -950,7 +961,7 @@ setTimeout(checkForUpdate, 5000);
 // Zurück in die App gewechselt -> sofort alles aktualisieren
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;
-  if (updatePending) return location.reload();
+  if (updatePending && doUpdate(updatePending)) return;
   clearShortCache();
   liveSoon(0);
   checkForUpdate();
@@ -972,6 +983,7 @@ function handleInvite(){
 const inviteLink = () => REDIRECT_URI + "?cid=" + encodeURIComponent(store.get("clientId") || "");
 
 (async () => {
+  if (new URLSearchParams(location.search).has("v")) history.replaceState(null, "", REDIRECT_URI);
   if (handleInvite()) {
     return viewLogin("", "Du wurdest zu Fair Shuffle eingeladen! 🎉 Tippe auf „Mit Spotify einloggen“. (Falls eine Fehlermeldung kommt: Die Person, die dich eingeladen hat, muss dich zuerst bei Spotify freischalten.)");
   }
