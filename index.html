@@ -55,6 +55,7 @@
   ol.prev li{padding:3px 0}
   ol.prev li span{color:var(--muted)}
   .sticky{position:sticky;bottom:calc(env(safe-area-inset-bottom) + 10px);z-index:5;box-shadow:0 6px 24px #000a}
+  .ctl button{font-size:22px;padding:6px 0;line-height:1}
   .hidden{display:none !important}
   .spin{display:inline-block;width:16px;height:16px;border:2px solid var(--muted);border-top-color:var(--accent);border-radius:50%;animation:r 0.8s linear infinite;vertical-align:middle;margin-right:8px}
   @keyframes r{to{transform:rotate(360deg)}}
@@ -66,7 +67,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 17</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 19</p>
 
 <script>
 "use strict";
@@ -77,7 +78,7 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 17;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 19;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -471,11 +472,19 @@ async function getProgress(targetId){
     if (saved && order.indexOf(saved.uri) >= 0) { index = order.indexOf(saved.uri); finished = !!saved.finished; }
   }
 
+  // Spotify spielt die Playlist, aber der Song ist nicht zuzuordnen -> ehrlich anzeigen statt alter Stand
+  let unknown = null;
+  if (curIdx < 0 && st && st.context && st.context.uri === ctx && st.item) {
+    playing = !!st.is_playing;
+    unknown = { name: st.item.name || "", artist: artistOf(st.item), uri: st.item.uri, type: st.item.type };
+  }
+
   // 3) Zuletzt gespielter Song: von Spotify, sonst der Song vor der aktuellen Stelle
   let song = store.get("lastSong_" + targetId);
   if (!song && index > 0 && names[index - 1]) song = { name: names[index - 1][0], artist: names[index - 1][1] };
   if (finished && index >= 0 && names[index]) song = song || { name: names[index][0], artist: names[index][1] };
-  return { index, total: order.length, playing, finished, state: st, song };
+  if (unknown) song = unknown;
+  return { index, total: order.length, playing, finished, state: st, song, unknown };
 }
 async function playFrom(targetId, uri, ms){
   const body = { context_uri: "spotify:playlist:" + targetId };
@@ -670,10 +679,26 @@ function setupQuick(box, r){
     if (p.index < 0) { prog.innerHTML = `<p>${p.total} Songs · noch nicht angefangen</p>`; return; }
     const nr = p.index + 1, done = p.finished || nr >= p.total;
     prog.innerHTML = `
-      <p>${p.playing ? "▶ Läuft gerade: Song" : p.state && p.state.item && p.state.context && p.state.context.uri === "spotify:playlist:" + r.target ? "⏸ Pausiert bei Song" : "Weiter bei Song"} <b style="color:var(--text)">${nr}</b> von ${p.total}</p>
+      ${p.unknown ? `<p>${p.playing ? "▶ Läuft gerade" : "⏸ Pausiert"} – diesen Song finde ich nicht in der gemischten Liste (zuletzt erkannt: Song ${nr} von ${p.total})</p>` :
+      `<p>${p.playing ? "▶ Läuft gerade: Song" : p.state && p.state.item && p.state.context && p.state.context.uri === "spotify:playlist:" + r.target ? "⏸ Pausiert bei Song" : "Weiter bei Song"} <b style="color:var(--text)">${nr}</b> von ${p.total}</p>`}
       <div class="bar"><div style="width:${Math.round(nr / p.total * 100)}%"></div></div>
-      ${p.song && p.song.name ? `<p>🎵 Aufgehört bei: <b style="color:var(--text)">${esc(p.song.name)}</b>${p.song.artist ? " – " + esc(p.song.artist) : ""}</p>` : ""}
-      ${done ? `<p style="color:var(--accent)">Runde fertig – Zeit für eine neue Runde!</p>` : ""}`;
+      ${p.song && p.song.name ? `<p>🎵 ${p.unknown ? "Spotify spielt" : "Aufgehört bei"}: <b style="color:var(--text)">${esc(p.song.name)}</b>${p.song.artist ? " – " + esc(p.song.artist) : ""}</p>` : ""}
+      ${done ? `<p style="color:var(--accent)">Runde fertig – Zeit für eine neue Runde!</p>` : ""}
+      ${p.state && p.state.context && p.state.context.uri === "spotify:playlist:" + r.target ? `
+        <div class="row ctl" style="margin-top:8px">
+          <button class="sec small" data-c="prev">⏮</button>
+          <button class="sec small" data-c="toggle">${p.playing ? "⏸" : "▶"}</button>
+          <button class="sec small" data-c="next">⏭</button>
+        </div>` : ""}`;
+    prog.querySelectorAll(".ctl button").forEach(b => b.onclick = async () => {
+      prog.querySelectorAll(".ctl button").forEach(x => x.disabled = true);
+      try {
+        if (b.dataset.c === "next") await api("/me/player/next", { method: "POST" });
+        else if (b.dataset.c === "prev") await api("/me/player/previous", { method: "POST" });
+        else await api(p.playing ? "/me/player/pause" : "/me/player/play", { method: "PUT" });
+      } catch(e) { qOut.innerHTML = msg(esc(playError(e)), "err"); }
+      liveSoon(350);   // Spotify braucht einen Moment, dann sofort neu anzeigen
+    });
   }).catch(() => { if (!prog.querySelector(".bar")) prog.innerHTML = `<p>Fortschritt gerade nicht abrufbar.</p>`; });
   refresh();
   liveUpdaters.push(refresh);
@@ -854,11 +879,35 @@ function render(){
 document.getElementById("btnSettings").onclick = viewSettings;
 
 /* ================== Live-Aktualisierung ================== */
-// Fortschritt alle 3 s neu holen, solange die App sichtbar ist
-// (aktueller Song alle 3 s, "Zuletzt gehört" höchstens alle 15 s – schont Spotifys Anfrage-Limit)
-setInterval(() => {
-  if (document.visibilityState === "visible" && currentView === "home") liveUpdaters.forEach(f => f());
-}, 3000);
+// Gezielte Aktualisierung statt Dauerschleife:
+//  - genau dann, wenn der aktuelle Song zu Ende ist (Song-Länge minus bisherige Spielzeit)
+//  - sofort nach ⏮ ⏯ ⏭, beim Zurückwechseln in die App und beim Anklicken des Fensters
+//  - als Absicherung (falls direkt in Spotify geskippt wird) höchstens alle 15 s
+let liveTimer = null, lastUri = null, sameTries = 0, expectChange = false;
+async function liveTick(){
+  clearTimeout(liveTimer);
+  if (document.visibilityState !== "visible" || currentView !== "home" || !liveUpdaters.length) {
+    liveTimer = setTimeout(liveTick, 15000); return;
+  }
+  delete shortCache.player;
+  await Promise.all(liveUpdaters.map(f => f()));
+  const st = await playerState();
+  const uri = st && st.item && st.item.uri;
+  let delay = 15000;
+  if (expectChange && uri === lastUri && sameTries < 4) { sameTries++; delay = 800; }   // Spotify hinkt kurz hinterher
+  else {
+    sameTries = 0; expectChange = false;
+    if (st && st.is_playing && st.item && st.item.duration_ms) {
+      const left = st.item.duration_ms - (st.progress_ms || 0);
+      if (left + 600 < delay) { delay = Math.max(500, left + 600); expectChange = true; }
+    }
+  }
+  lastUri = uri;
+  liveTimer = setTimeout(liveTick, delay);
+}
+function liveSoon(ms){ clearTimeout(liveTimer); expectChange = true; lastUri = null; liveTimer = setTimeout(liveTick, ms || 0); }
+window.addEventListener("focus", () => liveSoon(0));
+liveTimer = setTimeout(liveTick, 1500);
 
 // Neue App-Version auf GitHub? -> automatisch neu laden
 let updatePending = false;
@@ -884,7 +933,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;
   if (updatePending) return location.reload();
   clearShortCache();
-  if (currentView === "home") liveUpdaters.forEach(f => f());
+  liveSoon(0);
   checkForUpdate();
 });
 if ("serviceWorker" in navigator) {
