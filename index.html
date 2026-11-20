@@ -66,7 +66,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 16</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 17</p>
 
 <script>
 "use strict";
@@ -77,7 +77,7 @@ const SCOPES = [
   "user-library-read","user-read-playback-state","user-modify-playback-state",
   "user-read-recently-played"
 ].join(" ");
-const APP_VERSION = 16;         // muss zur Zahl unten auf der Seite passen
+const APP_VERSION = 17;         // muss zur Zahl unten auf der Seite passen
 const SCOPE_VER = 2;            // erhöhen, wenn neue Berechtigungen dazukommen -> einmal neu einloggen
 const REDIRECT_URI = location.origin + location.pathname;
 const API = "https://api.spotify.com/v1";
@@ -400,7 +400,7 @@ function cached(key, ms, fn){
 }
 function clearShortCache(){ for (const k in shortCache) delete shortCache[k]; }
 async function playerState(){
-  try { return await cached("player", 2500, () => api("/me/player")); } catch(e) { return null; }
+  try { return await cached("player", 2500, () => api("/me/player?market=from_token")); } catch(e) { return null; }
 }
 async function getOrder(targetId){
   let order = store.get("order_" + targetId);
@@ -413,6 +413,21 @@ async function getOrder(targetId){
   return order;
 }
 // Wo steht man in der Runde? -> { index (0-basiert), total, playing }
+// Findet einen Song in der gemischten Reihenfolge – auch wenn Spotify eine andere Fassung abspielt
+// (anderes Land / Neuveröffentlichung = andere Kennung): erst Kennung, dann Original-Fassung, dann Titel + Künstler
+function locate(order, names, t){
+  if (!t) return -1;
+  let i = order.indexOf(t.uri);
+  if (i >= 0) return i;
+  if (t.linked_from && t.linked_from.uri) { i = order.indexOf(t.linked_from.uri); if (i >= 0) return i; }
+  const key = songKey(t);
+  i = names.findIndex(n => songKey({ name: n[0], artists: [{ name: n[1] }] }) === key);
+  if (i >= 0) return i;
+  const plain = (t.name || "").toLowerCase().trim();   // letzter Versuch: nur der Titel, wenn er eindeutig ist
+  const hits = names.reduce((a, n, k) => (n[0].toLowerCase().trim() === plain ? a.concat(k) : a), []);
+  return hits.length === 1 ? hits[0] : -1;
+}
+
 async function getProgress(targetId){
   const order = await getOrder(targetId);
   const names = store.get("names_" + targetId, []);
@@ -423,7 +438,7 @@ async function getProgress(targetId){
   // 1) Zuletzt FERTIG gehörter Song dieser Runde (laut Spotify "Zuletzt gehört")
   let lastHit = null;
   try {
-    const rp = await cached("recent", 15000, () => api("/me/player/recently-played?limit=50"));
+    const rp = await cached("recent", 15000, () => api("/me/player/recently-played?limit=50&market=from_token"));
     lastHit = (rp.items || []).find(i => i.context && i.context.uri === ctx && i.track &&
                                          (!mixedAt || Date.parse(i.played_at) > mixedAt)) || null;
   } catch(e) {}
@@ -436,15 +451,16 @@ async function getProgress(targetId){
 
   // 2) Wo steht man gerade?
   let index = -1, playing = false, finished = false;
-  if (st && st.context && st.context.uri === ctx && st.item && order.indexOf(st.item.uri) >= 0) {
-    index = order.indexOf(st.item.uri);
+  const curIdx = st && st.context && st.context.uri === ctx && st.item ? locate(order, names, st.item) : -1;
+  if (curIdx >= 0) {
+    index = curIdx;
     playing = !!st.is_playing;
-    store.set("pos_" + targetId, { uri: st.item.uri, ms: st.progress_ms || 0 });
+    store.set("pos_" + targetId, { uri: order[curIdx], ms: st.progress_ms || 0 });
     // Song, bei dem man gerade steht (der grüne in Spotify) = wo man aufgehört hat
-    store.set("lastSong_" + targetId, { name: st.item.name || "", artist: artistOf(st.item), uri: st.item.uri, at: Date.now() });
+    store.set("lastSong_" + targetId, { name: st.item.name || "", artist: artistOf(st.item), uri: order[curIdx], at: Date.now() });
   } else {
     if (lastHit) {
-      const idx = order.indexOf(lastHit.track.uri);
+      const idx = locate(order, names, lastHit.track);
       const saved = store.get("pos_" + targetId);
       const savedIdx = saved ? order.indexOf(saved.uri) : -1;
       if (idx >= 0 && savedIdx < idx + 1) {   // beim Song nach dem zuletzt gehörten weitermachen
