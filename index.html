@@ -66,7 +66,7 @@
   <button class="small sec hidden" id="btnSettings">⚙︎</button>
 </header>
 <div id="app"></div>
-<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 10</p>
+<p id="ver" style="text-align:center;font-size:12px;margin-top:30px">Fair Shuffle · Version 11</p>
 
 <script>
 "use strict";
@@ -372,8 +372,17 @@ async function runMix(sourceId, sourceName, status){
   const targetId = await saveShuffled(sourceId, sourceName, shuffled);
   store.set("order_" + targetId, shuffled.map(t => t.uri));
   store.del("pos_" + targetId);
-  store.set("last", { id: sourceId, name: sourceName });
+  const recent = getRecent().filter(r => r.id !== sourceId);
+  recent.unshift({ id: sourceId, name: sourceName });
+  store.set("recent", recent.slice(0, 3));
   return { targetId, shuffled, dupes, excluded, stats: statsCache.get(sourceId) };
+}
+
+// Die letzten 3 gemischten Playlists (neueste zuerst)
+function getRecent(){
+  let r = store.get("recent");
+  if (!r) { const last = store.get("last"); r = last ? [last] : []; }   // Übernahme aus älterer Version
+  return r;
 }
 
 /* ================== Abspielen & Fortschritt ================== */
@@ -522,8 +531,8 @@ async function viewHome(){
   const mine = all.filter(p => p && own(p) && !isShuffleList(p));
   const others = all.filter(p => p && !own(p));
   const count = p => ((p.items || p.tracks || {}).total ?? "?");
-  const last = store.get("last");
-  const lastTarget = last && store.get("targets", {})[last.id];
+  const tmap = store.get("targets", {});
+  const recent = multiMode ? [] : getRecent().map(r => ({ ...r, target: tmap[r.id] })).filter(r => r.target);
 
   const card = (id, name, sub, img) => `
     <div class="card pl ${selected.has(id) ? "sel" : ""}" data-id="${esc(id)}" data-name="${esc(name)}">
@@ -536,17 +545,17 @@ async function viewHome(){
     ${store.get("scopeVer") !== SCOPE_VER ? `
       <div class="msg">Damit „Song x von y“ auch nach dem Schließen von Spotify stimmt, braucht die App eine zusätzliche Erlaubnis. Alles andere funktioniert auch so.
         <button class="small" id="btnRelogin" style="margin-top:8px">Einmal neu verbinden</button></div>` : ""}
-    ${lastTarget && !multiMode ? `
-      <div class="card" id="quick">
-        <p style="margin-top:0">Zuletzt gemischt</p>
-        <h3>${esc(last.name)}</h3>
-        <div id="prog">${spinMsg("Prüfe, wo du gerade bist …")}</div>
+    ${recent.length ? `<p style="margin:4px 0 0">Zuletzt gemischt</p>` : ""}
+    ${recent.map((r, i) => `
+      <div class="card" id="quick${i}">
+        <h3>${esc(r.name)}</h3>
+        <div class="prog">${spinMsg("Prüfe, wo du gerade bist …")}</div>
         <div class="row">
-          <button id="qNew">▶ Neue Runde</button>
-          <button class="sec" id="qResume">⏯ Weiterhören</button>
+          <button class="qNew">▶ Neue Runde</button>
+          <button class="sec qResume">⏯ Weiterhören</button>
         </div>
-        <div id="qOut"></div>
-      </div>` : ""}
+        <div class="qOut"></div>
+      </div>`).join("")}
     <div class="row" style="align-items:center">
       <p style="flex:2">${multiMode ? "Tippe die Playlists an, die zusammen gemischt werden sollen:" : `Hallo ${esc(me.display_name || me.id)}! Was soll gemischt werden?`}</p>
       <button class="small sec" id="btnMulti" style="flex:none">${multiMode ? "✕ Abbrechen" : "☑ Mehrere"}</button>
@@ -598,35 +607,39 @@ async function viewHome(){
     document.getElementById("noHits").classList.toggle("hidden", hits > 0);
   };
 
-  // Ein-Knopf-Start + Fortschritt
-  if (lastTarget && !multiMode) {
-    const prog = document.getElementById("prog"), qOut = document.getElementById("qOut");
-    getProgress(lastTarget).then(p => {
-      if (p.index < 0) { prog.innerHTML = `<p>${p.total} Songs · noch nicht angefangen</p>`; return; }
-      const nr = p.index + 1, done = p.finished || nr >= p.total;
-      prog.innerHTML = `
-        <p>${p.playing ? "▶ Läuft gerade: " : ""}Song <b style="color:var(--text)">${nr}</b> von ${p.total}</p>
-        <div class="bar"><div style="width:${Math.round(nr / p.total * 100)}%"></div></div>
-        ${done ? `<p style="color:var(--accent)">Runde fertig – Zeit für eine neue Runde!</p>` : ""}`;
-    }).catch(() => { prog.innerHTML = `<p>Fortschritt gerade nicht abrufbar.</p>`; });
+  // Ein-Knopf-Start + Fortschritt für die letzten 3
+  recent.forEach((r, i) => setupQuick(document.getElementById("quick" + i), r));
+}
 
-    document.getElementById("qNew").onclick = async () => {
-      const b1 = document.getElementById("qNew"), b2 = document.getElementById("qResume");
-      b1.disabled = b2.disabled = true;
-      try {
-        const r = await runMix(last.id, last.name, t => qOut.innerHTML = spinMsg(t));
-        qOut.innerHTML = resultHtml(r);
-        prog.innerHTML = `<p>Song <b style="color:var(--text)">1</b> von ${r.shuffled.length}</p><div class="bar"><div style="width:0%"></div></div>`;
-        try { await playFrom(r.targetId); qOut.insertAdjacentHTML("afterbegin", msg("▶ Neue Runde läuft!", "ok")); }
-        catch(e) { qOut.insertAdjacentHTML("afterbegin", msg(esc(playError(e)) + `<br><a href="https://open.spotify.com/playlist/${esc(r.targetId)}" target="_blank" rel="noopener" style="color:inherit">In Spotify öffnen</a>`, "err")); }
-      } catch(e) { qOut.innerHTML = msg(esc(friendly(e)), "err"); }
-      b1.disabled = b2.disabled = false;
-    };
-    document.getElementById("qResume").onclick = async () => {
-      try { await resume(lastTarget); qOut.innerHTML = msg("▶ Weiter geht's!", "ok"); }
-      catch(e) { qOut.innerHTML = msg(esc(playError(e)) + `<br><a href="https://open.spotify.com/playlist/${esc(lastTarget)}" target="_blank" rel="noopener" style="color:inherit">In Spotify öffnen</a>`, "err"); }
-    };
-  }
+function setupQuick(box, r){
+  const prog = box.querySelector(".prog"), qOut = box.querySelector(".qOut");
+  const bNew = box.querySelector(".qNew"), bRes = box.querySelector(".qResume");
+  const openLink = id => `<br><a href="https://open.spotify.com/playlist/${esc(id)}" target="_blank" rel="noopener" style="color:inherit">In Spotify öffnen</a>`;
+  getProgress(r.target).then(p => {
+    if (p.index < 0) { prog.innerHTML = `<p>${p.total} Songs · noch nicht angefangen</p>`; return; }
+    const nr = p.index + 1, done = p.finished || nr >= p.total;
+    prog.innerHTML = `
+      <p>${p.playing ? "▶ Läuft gerade: " : ""}Song <b style="color:var(--text)">${nr}</b> von ${p.total}</p>
+      <div class="bar"><div style="width:${Math.round(nr / p.total * 100)}%"></div></div>
+      ${done ? `<p style="color:var(--accent)">Runde fertig – Zeit für eine neue Runde!</p>` : ""}`;
+  }).catch(() => { prog.innerHTML = `<p>Fortschritt gerade nicht abrufbar.</p>`; });
+
+  bNew.onclick = async () => {
+    bNew.disabled = bRes.disabled = true;
+    try {
+      const res = await runMix(r.id, r.name, t => qOut.innerHTML = spinMsg(t));
+      r.target = res.targetId;
+      qOut.innerHTML = resultHtml(res);
+      prog.innerHTML = `<p>Song <b style="color:var(--text)">1</b> von ${res.shuffled.length}</p><div class="bar"><div style="width:0%"></div></div>`;
+      try { await playFrom(res.targetId); qOut.insertAdjacentHTML("afterbegin", msg("▶ Neue Runde läuft!", "ok")); }
+      catch(e) { qOut.insertAdjacentHTML("afterbegin", msg(esc(playError(e)) + openLink(res.targetId), "err")); }
+    } catch(e) { qOut.innerHTML = msg(esc(friendly(e)), "err"); }
+    bNew.disabled = bRes.disabled = false;
+  };
+  bRes.onclick = async () => {
+    try { await resume(r.target); qOut.innerHTML = msg("▶ Weiter geht's!", "ok"); }
+    catch(e) { qOut.innerHTML = msg(esc(playError(e)) + openLink(r.target), "err"); }
+  };
 }
 
 /* ---------- Misch-Seite einer Playlist ---------- */
